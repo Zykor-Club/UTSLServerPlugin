@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -45,6 +46,33 @@ namespace BossCommandExecutor
         private readonly FloatingTextService _floatingTextService = new();
 
         internal static Configuration Config { get; private set; } = new();
+
+        /// <summary>
+        /// 同一次 Boss 死亡的去重表。
+        ///
+        /// UTSL 实测：一只 Boss 死亡会**同时**触发两个钩子 ——
+        ///   1) HookEvents.Terraria.NPC.checkDead   （对应上游的 NpcKilled）
+        ///   2) On.Terraria.GameContent.BossDamageTracker.OnBossKilled
+        /// 上游只对"多体节 Boss"做了互斥（OnNpcKilled 里提前 return），
+        /// 单体节 Boss（例如史莱姆王）会两条路各跑一遍命令。
+        /// 这里按 (世界, 槽位, 类型) 做一个短窗口认领，保证一次死亡只执行一次。
+        /// </summary>
+        private readonly ConcurrentDictionary<(ServerContext Server, int WhoAmI, int Type), long> _handledKills = new();
+
+        private const long KillDedupWindowMs = 5_000;
+
+        private bool TryClaimKill(ServerContext server, NPC npc)
+        {
+            long now = Environment.TickCount64;
+
+            foreach (KeyValuePair<(ServerContext, int, int), long> kv in _handledKills)
+            {
+                if (now - kv.Value > KillDedupWindowMs)
+                    _handledKills.TryRemove(kv.Key, out _);
+            }
+
+            return _handledKills.TryAdd((server, npc.whoAmI, npc.type), now);
+        }
 
         public override int InitializationOrder => TShock.Order + 1;
 
@@ -144,6 +172,13 @@ namespace BossCommandExecutor
                 return;
             }
 
+            // 与 OnBossKilled 互斥：同一次死亡只执行一次命令
+            if (!TryClaimKill(server, npc))
+            {
+                TShock.Log.Debug($"[BossCommand] 该死亡已由其它钩子处理，跳过: {npc.FullName} (Idx:{npc.whoAmI})");
+                return;
+            }
+
             if (!_bossTracker.TryProcessDeath(server, npc.whoAmI, npc.type))
             {
                 TShock.Log.Debug($"[BossCommand] 跳过重复或未追踪的死亡: {npc.FullName} (Idx:{npc.whoAmI}, Type:{npc.type})");
@@ -215,6 +250,13 @@ namespace BossCommandExecutor
 
             ServerContext? server = FindServerForNpc(npc);
             if (server is null) return;
+
+            // 与 OnNpcKilled 互斥：同一次死亡只执行一次命令
+            if (!TryClaimKill(server, npc))
+            {
+                TShock.Log.Debug($"[BossCommand] OnBossKilled: 该死亡已由 NpcKilled 处理，跳过: {config.Name}");
+                return;
+            }
 
             if (config.RequireSummoned && !WasBossSpawned(server, npc.type))
             {
