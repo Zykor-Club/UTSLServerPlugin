@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>BetterBack</AssemblyName>
+        <RootNamespace>BetterBack</RootNamespace>
+        <Version>2026.5.2</Version>
+    </PropertyGroup>
+
+</Project>
