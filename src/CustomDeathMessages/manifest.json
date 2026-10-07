@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "自定义死亡消息：按死亡归因（PVP/NPC/弹幕/21 种环境死亡）替换播报文案，并支持死亡次数里程碑公告"
+  },
+  "README.en-US": {
+    "Description": "Custom death messages: replaces broadcast text by death cause (PVP/NPC/projectile/21 environmental causes) with death-count milestones"
+  }
+}

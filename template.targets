@@ -25,11 +25,11 @@
         <UnifierTSLRepo Condition="'$(UnifierTSLRepo)' == ''">$(MSBuildThisFileDirectory)../UnifierTSL</UnifierTSLRepo>
     </PropertyGroup>
 
-    <ItemGroup>
-        <PackageReference Include="GetText.NET" Version="8.0.5">
-            <IncludeAssets>compile</IncludeAssets>
-        </PackageReference>
-    </ItemGroup>
+    <!--
+        GetText.NET 不在这里显式引用：TShockAPI 已经以 8.0.5 引用它（与宿主运行时一致），
+        传递过来即可编译 src/Shared/I18n.cs。显式写死会被 dependabot 拱到 10.x，
+        与宿主实际加载的 GetText 版本不一致。
+    -->
 
     <!--
         宿主（UnifierTSL / TShockAPI）已经加载了这些程序集，Private=false 避免复制到 out/，

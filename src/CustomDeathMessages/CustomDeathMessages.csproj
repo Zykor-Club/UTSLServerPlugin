@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>CustomDeathMessages</AssemblyName>
+        <RootNamespace>CustomDeathMessages</RootNamespace>
+        <Version>1.0.1</Version>
+    </PropertyGroup>
+
+</Project>
