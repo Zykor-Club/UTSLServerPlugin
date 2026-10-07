@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>GroupBlacklist</AssemblyName>
+        <RootNamespace>GroupBlacklistPlugin</RootNamespace>
+        <Version>1.1.0</Version>
+    </PropertyGroup>
+
+</Project>

@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "禁止指定用户组进入服务器，支持在线踢出和豁免名单"
+  },
+  "README.en-US": {
+    "Description": "Block specified user groups from joining the server, with online kick and exemption list"
+  }
+}
