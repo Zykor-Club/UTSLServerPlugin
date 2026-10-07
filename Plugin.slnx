@@ -7,5 +7,6 @@
     <File Path="template.targets" />
   </Folder>
   <Project Path="src/GroupBlacklist/GroupBlacklist.csproj" />
+  <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />
   <Project Path="src/ItemPool/ItemPool.csproj" />
 </Solution>

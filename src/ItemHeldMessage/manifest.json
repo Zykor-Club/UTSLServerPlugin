@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "手持指定物品时显示浮动文本/信息栏提示，并可按权限组自动执行命令"
+  },
+  "README.en-US": {
+    "Description": "Shows floating or chat hints when holding configured items, and can auto-run commands per permission group"
+  }
+}
