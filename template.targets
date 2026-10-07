@@ -1,0 +1,66 @@
+<Project>
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+		<LangVersion>latest</LangVersion>
+        <!-- UTSL 插件不需要把第三方依赖复制到 out/：宿主已经带了 UnifierTSL / TShockAPI 及其依赖。
+             需要私有依赖的插件请走 ModuleDependencies + dependencies.json（参考 UTSL 自带的 Atelier 插件）。 -->
+        <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <OutputPath>..\..\out\$(Configuration)</OutputPath>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
+        <ResolveAssemblyWarnOrErrorOnTargetArchitectureMismatch>None</ResolveAssemblyWarnOrErrorOnTargetArchitectureMismatch>
+    </PropertyGroup>
+
+    <!--
+        UnifierTSL 源码位置。默认取本仓库同级目录下的 UnifierTSL。
+        放在别处时用属性覆盖：
+            dotnet build Plugin.slnx -c Release -p:UnifierTSLRepo=D:\path\to\UnifierTSL
+    -->
+    <PropertyGroup>
+        <UnifierTSLRepo Condition="'$(UnifierTSLRepo)' == ''">$(MSBuildThisFileDirectory)../UnifierTSL</UnifierTSLRepo>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="GetText.NET" Version="8.0.5">
+            <IncludeAssets>compile</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+
+    <!--
+        宿主（UnifierTSL / TShockAPI）已经加载了这些程序集，Private=false 避免复制到 out/，
+        这样打包出来的 Plugins.zip 里只有插件自己的 DLL。
+    -->
+    <ItemGroup>
+        <ProjectReference Include="$(UnifierTSLRepo)/src/UnifierTSL/UnifierTSL.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+        <ProjectReference Include="$(UnifierTSLRepo)/src/Plugins/TShockAPI/TShockAPI.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="..\Shared\**\*.cs"/>
+        <EmbeddedResource Include=".\i18n\*.mo">
+            <LogicalName>i18n.%(FileName).mo</LogicalName>
+        </EmbeddedResource>
+    </ItemGroup>
+
+    <Target Name="githash" BeforeTargets="PreBuildEvent">
+        <Exec Command="git log -1 --pretty=&quot;format:%25H&quot;" StandardOutputImportance="low" StandardErrorImportance="low" ContinueOnError="true" ConsoleToMSBuild="true">
+            <Output TaskParameter="ConsoleOutput" PropertyName="CommitHashValue"/>
+        </Exec>
+        <ItemGroup>
+            <AssemblyAttribute Include="System.Reflection.AssemblyInformationalVersionAttribute">
+                <_Parameter1>$(CommitHashValue)</_Parameter1>
+            </AssemblyAttribute>
+        </ItemGroup>
+    </Target>
+</Project>

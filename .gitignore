@@ -1,8 +1,29 @@
-bin/
-obj/
-*.user
-.vs/
-.idea/
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
 
-# 工作区说明文件：本地保留，不提交
+## UTSL 插件仓库特有
+out/
+publish/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## 工作区说明文件：本地保留，不提交
 AGENT.md

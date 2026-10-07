@@ -1,31 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <LangVersion>latest</LangVersion>
-    <AssemblyName>ItemPool</AssemblyName>
-    <RootNamespace>ItemPool</RootNamespace>
-  </PropertyGroup>
+    <Import Project="..\..\template.targets"/>
 
-  <!--
-    UTSL 源码仓库位置。默认取本仓库同级目录下的 UnifierTSL。
-    如果放在别处，构建时覆盖即可：
-      dotnet build -p:UnifierTSLRepo=D:\path\to\UnifierTSL
-  -->
-  <PropertyGroup>
-    <UnifierTSLRepo Condition="'$(UnifierTSLRepo)' == ''">$(MSBuildThisFileDirectory)..\..\..\UnifierTSL</UnifierTSLRepo>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <!-- 宿主已加载这两个程序集，Private=false 避免重复复制到输出目录 -->
-    <ProjectReference Include="$(UnifierTSLRepo)\src\UnifierTSL\UnifierTSL.csproj">
-      <Private>false</Private>
-    </ProjectReference>
-    <ProjectReference Include="$(UnifierTSLRepo)\src\Plugins\TShockAPI\TShockAPI.csproj">
-      <Private>false</Private>
-    </ProjectReference>
-  </ItemGroup>
+    <PropertyGroup>
+        <AssemblyName>ItemPool</AssemblyName>
+        <RootNamespace>ItemPool</RootNamespace>
+        <Version>2026.7.23.0</Version>
+    </PropertyGroup>
 
 </Project>

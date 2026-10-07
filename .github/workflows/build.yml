@@ -1,0 +1,130 @@
+name: Build and Publish UTSL Plugins
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  Lint:
+    runs-on: ubuntu-latest
+    name: Code Quality Check
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check plugin structure
+        shell: pwsh
+        run: |
+          $errors = @()
+          $srcDirs = Get-ChildItem src -Directory | Where-Object { $_.Name -ne "Shared" }
+          foreach ($dir in $srcDirs) {
+            $name = $dir.Name
+            $projPath = "$name/$name.csproj"
+            if (-not (Test-Path "src/$projPath")) {
+              $errors += "MISSING csproj: src/$projPath"
+              continue
+            }
+            $csproj = Get-Content "src/$projPath" -Raw
+            if ($csproj -notmatch "template\.targets") {
+              $errors += "BAD csproj: src/$name/$name.csproj missing template.targets import"
+            }
+            if (-not (Test-Path "src/$name/manifest.json")) {
+              $errors += "MISSING manifest.json: src/$name/manifest.json"
+            }
+            if (-not (Test-Path "src/$name/README.md")) {
+              $errors += "MISSING README.md: src/$name/README.md"
+            }
+            $dlls = Get-ChildItem "src/$name" -Recurse -Include *.dll,*.pdb,*.exe -ErrorAction SilentlyContinue
+            if ($dlls) { $errors += "DLL/PDB/EXE in src/$name/" }
+          }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "All checks passed"
+  Build:
+    runs-on: ubuntu-latest
+    name: Build
+    needs: Lint
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Checkout UnifierTSL
+        uses: actions/checkout@v7
+        with:
+          repository: CedaryCat/UnifierTSL
+          path: UnifierTSL
+          fetch-depth: 1
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_CLI_UI_LANGUAGE: zh-CN
+        with:
+          dotnet-version: |
+            9.x
+      - name: Restore NuGet
+        run: dotnet restore Plugin.slnx -p:UnifierTSLRepo=${{ github.workspace }}/UnifierTSL
+      - name: Build
+        shell: pwsh
+        run: |
+          dotnet build Plugin.slnx -c Release --no-restore -p:UnifierTSLRepo=${{ github.workspace }}/UnifierTSL
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Build successful!"
+      - name: Collect plugin artifacts
+        shell: pwsh
+        run: ./scripts/publish-plugins-zip.ps1 -NoBuild -NoZip -BuildType Release -UnifierTSLRepo ${{ github.workspace }}/UnifierTSL
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Plugin-DLLs
+          path: publish/*.dll
+          compression-level: 9
+  Publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Zykor-Club/UTSLServerPlugin'
+    runs-on: ubuntu-latest
+    name: Publish Release
+    needs: Build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Checkout UnifierTSL
+        uses: actions/checkout@v7
+        with:
+          repository: CedaryCat/UnifierTSL
+          path: UnifierTSL
+          fetch-depth: 1
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_CLI_UI_LANGUAGE: zh-CN
+        with:
+          dotnet-version: |
+            9.x
+      - name: Package plugins
+        shell: pwsh
+        run: ./scripts/publish-plugins-zip.ps1 -BuildType Release -UnifierTSLRepo ${{ github.workspace }}/UnifierTSL
+      - name: Upload Plugins.zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: Plugins.zip
+          path: out/Plugins.zip
+          compression-level: 9
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: V1.0.0.0
+          name: "最新版本"
+          body: |
+            # 插件下载
+            ### 每次仓库更新都会在这里发布最新的插件包。
+            ### 下载 Plugins.zip 后解压，将 .dll 放入 UTSL 的 plugins 文件夹（只放插件自己的 dll）。
+            ### 插件列表和文档：https://github.com/Zykor-Club/UTSLServerPlugin
+            ### 当前适配：UnifierTSL (UTSL) / .NET 9.0
+          artifacts: out/Plugins.zip
+          allowUpdates: true
+          removeArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
