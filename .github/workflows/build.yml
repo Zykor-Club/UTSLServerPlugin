@@ -55,7 +55,9 @@ jobs:
         with:
           repository: CedaryCat/UnifierTSL
           path: UnifierTSL
-          fetch-depth: 1
+          # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
+          # 浅克隆会被它直接拒绝（Repository is a shallow clone）
+          fetch-depth: 0
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         env:
@@ -96,7 +98,9 @@ jobs:
         with:
           repository: CedaryCat/UnifierTSL
           path: UnifierTSL
-          fetch-depth: 1
+          # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
+          # 浅克隆会被它直接拒绝（Repository is a shallow clone）
+          fetch-depth: 0
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         env:
