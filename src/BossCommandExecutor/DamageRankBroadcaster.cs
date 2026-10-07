@@ -32,14 +32,18 @@ namespace BossCommandExecutor
         /// <summary>
         /// 广播伤害排行到所有在线玩家
         /// </summary>
-        public void Broadcast(ServerContext server, BossDamageTracker tracker, NPC npc)
+        /// <param name="lifeMax">
+        /// 显示用的最大生命。多体节 Boss 要传整组的总血量（单个体节的 lifeMax 只有 150 之类），
+        /// 单体节直接传 npc.lifeMax。
+        /// </param>
+        public void Broadcast(ServerContext server, BossDamageTracker tracker, NPC npc, int lifeMax)
         {
             try
             {
                 var entries = ExtractPlayerEntries(tracker);
                 if (entries.Count == 0) return;
 
-                var message = BuildRankingMessage(server, tracker, npc, entries);
+                var message = BuildRankingMessage(server, tracker, npc, entries, lifeMax);
                 BroadcastToAllPlayers(server, message);
             }
             catch (Exception ex)
@@ -76,7 +80,8 @@ namespace BossCommandExecutor
             ServerContext server,
             BossDamageTracker tracker, 
             NPC npc, 
-            List<NPCDamageTracker.PlayerCreditEntry> playerEntries)
+            List<NPCDamageTracker.PlayerCreditEntry> playerEntries,
+            int lifeMax)
         {
             var sb = new StringBuilder();
             // UTSL 多世界：只统计当前世界的玩家
@@ -100,7 +105,7 @@ namespace BossCommandExecutor
             // 标题与基础信息
             sb.AppendLine("      [i:3455][c/AD89D5:伤][c/D68ACA:害][c/DF909A:排][c/E5A894:行][c/E5BE94:榜][i:3454]");
             sb.AppendLine($"{tracker.Name} 参战 {playerCountInfo}位 {FormatDuration(duration)}");
-            sb.AppendLine($"生命: [c/FFA96D:{npc.lifeMax}] 攻击: [c/FFE36D:{npc.damage}] 防御: [c/EA64AC:{npc.defense}]");
+            sb.AppendLine($"生命: [c/FFA96D:{lifeMax}] 攻击: [c/FFE36D:{npc.damage}] 防御: [c/EA64AC:{npc.defense}]");
             sb.AppendLine($"总伤: [c/FF726E:{totalDmg}] 玩家: [c/FCFE6D:{playerDmg}] 减益: [c/61BFE2:{worldDmg}]");
 
             // 计算MVP（DPS最高）

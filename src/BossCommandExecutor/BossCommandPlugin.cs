@@ -57,21 +57,38 @@ namespace BossCommandExecutor
         /// 单体节 Boss（例如史莱姆王）会两条路各跑一遍命令。
         /// 这里按 (世界, 槽位, 类型) 做一个短窗口认领，保证一次死亡只执行一次。
         /// </summary>
-        private readonly ConcurrentDictionary<(ServerContext Server, int WhoAmI, int Type), long> _handledKills = new();
+        private readonly ConcurrentDictionary<string, long> _handledKills = new();
 
         private const long KillDedupWindowMs = 5_000;
+
+        /// <summary>钩子触发时濒死体节还没被置为 inactive，延后一点再判定</summary>
+        private const int KillSettleDelayMs = 400;
+
+        /// <summary>
+        /// 击杀认领键。
+        /// 多体节 Boss 必须**整组共用一个键** —— 否则每个体节各认领各的，
+        /// 而单个体节的判定又因为"自己还 active"永远失败，就会互相抵消导致命令一次都不执行
+        /// （实测世界吞噬者就是这样：OnBossKilled 触发了、排行榜播了，但命令被 NpcKilled 的认领挡住）。
+        /// </summary>
+        private static string KillClaimKey(ServerContext server, NPC npc)
+        {
+            if (BossTracker.TryGetSegmentTypes(server, npc.type, out int[] types))
+                return server.Name + ":grp:" + string.Join(",", types.OrderBy(t => t));
+
+            return server.Name + ":npc:" + npc.whoAmI + ":" + npc.type;
+        }
 
         private bool TryClaimKill(ServerContext server, NPC npc)
         {
             long now = Environment.TickCount64;
 
-            foreach (KeyValuePair<(ServerContext, int, int), long> kv in _handledKills)
+            foreach (KeyValuePair<string, long> kv in _handledKills)
             {
                 if (now - kv.Value > KillDedupWindowMs)
                     _handledKills.TryRemove(kv.Key, out _);
             }
 
-            return _handledKills.TryAdd((server, npc.whoAmI, npc.type), now);
+            return _handledKills.TryAdd(KillClaimKey(server, npc), now);
         }
 
         public override int InitializationOrder => TShock.Order + 1;
@@ -148,17 +165,20 @@ namespace BossCommandExecutor
             Configuration.BossCommandConfig? bossConfig = FindBossConfig(npc.type);
             if (bossConfig == null) return;
 
-            _bossTracker.MarkAsAlive(server, npc.whoAmI, npc.type, bossConfig.Name);
+            _bossTracker.MarkAsAlive(server, npc.whoAmI, npc.type, bossConfig.Name, npc.lifeMax);
         }
 
         /// <summary>
         /// 对应上游的 ServerApi.Hooks.NpcKilled。
-        /// HookEvents.Terraria.NPC.checkDead 的注入点就是 NPC.checkDead 里 active = false 之前，
-        /// 每次死亡刚好触发一次（与上游的 Hooks.NPC.Killed 等价）。
+        ///
+        /// ⚠️ 实测（UTSL）：HookEvents.Terraria.NPC.checkDead 是**每次受到伤害**都会被调用的
+        /// （Terraria 内部用它判断"这个 NPC 该不该死"），**不是**只在死亡时调用。
+        /// 所以必须先确认 life &lt;= 0，否则玩家第一次打到 Boss 就会误触发整套命令。
         /// </summary>
         private void OnNpcKilled(NPC npc, HookEvents.Terraria.NPC.checkDeadEventArgs args)
         {
             if (npc == null || npc.type <= 0 || !Config.Enabled) return;
+            if (npc.life > 0) return;   // 还活着，只是挨了一下
 
             ServerContext? server = args.root?.ToServer();
             if (server is null) return;
@@ -166,34 +186,11 @@ namespace BossCommandExecutor
             Configuration.BossCommandConfig? config = FindBossConfig(npc.type);
             if (config == null) return;
 
-            // 诊断：把触发时的血量/存活状态打出来（用于确认是否为"死亡前误触发"）
-            TShock.Log.Info($"[BossCommand] checkDead 触发: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax} active={npc.active}");
+            TShock.Log.Info($"[BossCommand] checkDead 判定死亡: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax}");
 
-            // ⚠️ 与上游不同：上游在这里对"多体节 Boss"直接 return，指望 OnBossKilled 接手。
-            // 但 TryProcessDeath 自己就实现了"所有体节都死光才返回 true"的判定，而且
-            // 不依赖 OnBossKilled 是否会触发（实测世界吞噬者这条路径不可靠）。
-            // 所以这里不再提前返回，交给 TryProcessDeath 判定；与 OnBossKilled 的重复由 TryClaimKill 兜底。
-
-            // 与 OnBossKilled 互斥：同一次死亡只执行一次命令
-            if (!TryClaimKill(server, npc))
-            {
-                TShock.Log.Debug($"[BossCommand] 该死亡已由其它钩子处理，跳过: {npc.FullName} (Idx:{npc.whoAmI})");
-                return;
-            }
-
-            if (!_bossTracker.TryProcessDeath(server, npc.whoAmI, npc.type))
-            {
-                TShock.Log.Debug($"[BossCommand] 跳过重复或未追踪的死亡: {npc.FullName} (Idx:{npc.whoAmI}, Type:{npc.type})");
-                return;
-            }
-
-            if (config.RequireSummoned && !WasBossSpawned(server, npc.type))
-            {
-                TShock.Log.Debug($"[BossCommand] 未记录生成，跳过: {npc.FullName}");
-                return;
-            }
-
-            Task.Run(() => ProcessBossKill(server, config, npc));
+            ServerContext ctx = server;
+            NPC dying = npc;
+            Task.Run(() => ProcessKillAfterDelayAsync(ctx, dying, config, "NpcKilled"));
         }
 
         private bool WasBossSpawned(ServerContext server, int npcType)
@@ -253,30 +250,68 @@ namespace BossCommandExecutor
             ServerContext? server = FindServerForNpc(npc);
             if (server is null) return;
 
-            TShock.Log.Info($"[BossCommand] OnBossKilled 触发: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax} active={npc.active}");
+            TShock.Log.Info($"[BossCommand] OnBossKilled 触发: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax}");
 
-            // 伤害排行广播属于"伤害追踪"的职责，跟命令执行是两回事：
-            // 必须放在命令去重之前，否则单体节 Boss 会被 OnNpcKilled 先去重掉，排行榜永远不播。
+            // 伤害排行广播属于"伤害追踪"的职责，跟命令执行是两回事，所以紧挨着触发点立刻播。
+            // 多体节 Boss 要显示整组的总血量，而不是单个体节的（实测世界吞噬者只显示 150）。
             if (Config.AutoBroadcastDamageRanking)
             {
-                _damageRanker.Broadcast(server, self, npc);
+                int displayLifeMax = _bossTracker.GetGroupLifeMax(server, npc.type, npc.lifeMax);
+                _damageRanker.Broadcast(server, self, npc, displayLifeMax);
             }
 
-            // 与 OnNpcKilled 互斥：同一次死亡只执行一次命令
-            if (!TryClaimKill(server, npc))
+            ServerContext ctx = server;
+            NPC dead = npc;
+            Task.Run(() => ProcessKillAfterDelayAsync(ctx, dead, config, "OnBossKilled"));
+        }
+
+        /// <summary>
+        /// 真正判定"这一次 Boss 击杀"。
+        ///
+        /// 为什么必须延迟：OTAPI 的 checkDead / OnBossKilled 都在 Terraria 把 active 置 false
+        /// **之前**触发，此刻濒死的体节自己还是 active=True。所以现场直接判断"还有没有体节存活"
+        /// 永远为真 —— 多体节 Boss 会永远判不出死亡。
+        /// 延后几百毫秒让世界把 active 置 false，再由 IsBossDefeated 统一判定。
+        ///
+        /// 两个钩子都会走到这里，靠"按体节组认领"（KillClaimKey）保证一次击杀只执行一次命令。
+        /// </summary>
+        private async Task ProcessKillAfterDelayAsync(
+            ServerContext server,
+            NPC npc,
+            Configuration.BossCommandConfig config,
+            string source)
+        {
+            try
             {
-                TShock.Log.Debug($"[BossCommand] OnBossKilled: 该死亡已由 NpcKilled 处理，命令不重复执行: {config.Name}");
-                return;
-            }
+                await Task.Delay(KillSettleDelayMs);
 
-            if (config.RequireSummoned && !WasBossSpawned(server, npc.type))
+                if (!_bossTracker.IsBossDefeated(server, npc.type))
+                {
+                    TShock.Log.Debug($"[BossCommand] {source}: 还有体节存活，不处理: {config.Name}");
+                    return;
+                }
+
+                if (!TryClaimKill(server, npc))
+                {
+                    TShock.Log.Debug($"[BossCommand] {source}: 本次击杀已由其它钩子处理，跳过: {config.Name}");
+                    return;
+                }
+
+                if (config.RequireSummoned && !WasBossSpawned(server, npc.type))
+                {
+                    TShock.Log.Debug($"[BossCommand] {source}: 未记录生成，跳过: {config.Name}");
+                    _bossTracker.ClearGroupLife(server, npc.type);
+                    return;
+                }
+
+                TShock.Log.Info($"[BossCommand] 判定 {config.Name} 已被击杀（来源 {source}）");
+                await ProcessBossKill(server, config, npc);
+                _bossTracker.ClearGroupLife(server, npc.type);
+            }
+            catch (Exception ex)
             {
-                TShock.Log.Debug($"[BossCommand] OnBossKilled: 未记录生成，跳过: {config.Name}");
-                return;
+                TShock.Log.Error($"[BossCommand] 处理击杀失败({source}): {ex}");
             }
-
-            TShock.Log.Info($"[BossCommand] OnBossKilled钩子触发: {config.Name}");
-            Task.Run(() => ProcessBossKill(server, config, npc));
         }
 
         private async Task ProcessBossKill(ServerContext server, Configuration.BossCommandConfig config, NPC npc)

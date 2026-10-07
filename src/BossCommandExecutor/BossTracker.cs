@@ -20,6 +20,9 @@ namespace BossCommandExecutor
 
         private readonly ConcurrentDictionary<string, ConcurrentHashSet<(ServerContext Server, int WhoAmI)>> _compositeBossSegments = new();
 
+        /// <summary>体节组的总最大生命（生成时累加），用于伤害排行榜显示多体节 Boss 的真实总血量</summary>
+        private readonly ConcurrentDictionary<string, int> _groupLifeMax = new();
+
         private readonly Timer _cleanupTimer;
 
         public static readonly Dictionary<int, int[]> MultiSegmentBossMap = new()
@@ -61,7 +64,7 @@ namespace BossCommandExecutor
         private static string SegmentKey(ServerContext server, IEnumerable<int> types)
             => server.Name + "#" + string.Join(",", types.OrderBy(t => t));
 
-        public void MarkAsAlive(ServerContext server, int whoAmI, int netID, string bossName)
+        public void MarkAsAlive(ServerContext server, int whoAmI, int netID, string bossName, int lifeMax)
         {
             _aliveInstances[(server, whoAmI)] = netID;
             _spawnedTypes[(server, netID)] = 1;
@@ -69,6 +72,7 @@ namespace BossCommandExecutor
             if (MultiSegmentBossMap.TryGetValue(netID, out var segmentTypes))
             {
                 var key = SegmentKey(server, segmentTypes);
+                _groupLifeMax.AddOrUpdate(key, lifeMax, (_, old) => old + lifeMax);
                 var segments = _compositeBossSegments.GetOrAdd(key, _ => new ConcurrentHashSet<(ServerContext, int)>());
                 segments.Add((server, whoAmI));
                 TShock.Log.Debug($"[BossCommand] 追踪复合Boss体节: {bossName} (NetID:{netID}, Idx:{whoAmI}, Key:{key})");
@@ -144,6 +148,66 @@ namespace BossCommandExecutor
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// 取出该 NPC 类型所属的**多体节**组（只有超过 1 个体节才算组）。
+        /// MultiSegmentBossMap 优先，其次 NPCDamageTracker 注册的自定义复合 Boss。
+        /// </summary>
+        public static bool TryGetSegmentTypes(ServerContext? server, int netID, out int[] types)
+        {
+            if (MultiSegmentBossMap.TryGetValue(netID, out var mapped) && mapped.Length > 1)
+            {
+                types = mapped;
+                return true;
+            }
+
+            var customDef = NPCDamageTracker.CustomBossDefinitions[netID];
+            if (customDef?.NPCTypes is { Count: > 1 } list)
+            {
+                types = list.ToArray();
+                return true;
+            }
+
+            types = [];
+            return false;
+        }
+
+        /// <summary>
+        /// Boss 是否已被彻底击败。
+        /// ⚠️ 调用点必须在 OTAPI 钩子**之外**（钩子触发时濒死体节的 active 还是 true，
+        /// 直接判定会把"自己"也算成存活体节，导致多体节 Boss 永远判不出死亡）。
+        /// </summary>
+        public bool IsBossDefeated(ServerContext server, int npcType)
+        {
+            if (!TryGetSegmentTypes(server, npcType, out var types))
+                return true;
+
+            foreach (var type in types)
+            {
+                if (IsAnyNPCAliveOfType(server, type))
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>多体节 Boss 的总最大生命（生成时累加）；单体节返回 fallback</summary>
+        public int GetGroupLifeMax(ServerContext server, int npcType, int fallback)
+        {
+            if (!TryGetSegmentTypes(server, npcType, out var types))
+                return fallback;
+
+            return _groupLifeMax.TryGetValue(SegmentKey(server, types), out int total) && total > 0
+                ? total
+                : fallback;
+        }
+
+        /// <summary>一次击杀处理完后清掉该组的血量累计，避免下一轮累加</summary>
+        public void ClearGroupLife(ServerContext server, int npcType)
+        {
+            if (TryGetSegmentTypes(server, npcType, out var types))
+                _groupLifeMax.TryRemove(SegmentKey(server, types), out _);
         }
 
         public bool WasEverSpawned(ServerContext server, int netID) => _spawnedTypes.ContainsKey((server, netID));
