@@ -82,6 +82,9 @@ public sealed class BetterBackPlugin : BasePlugin
         _commandHandler = new CommandHandler(_dataManager, _cooldowns, _godModePlayers, _autoReturnTimers);
         RegisterCommands();
         TShock.Log.Info("[BetterBack] 插件已加载 v2026.5.2.0");
+        // 这两个权限名是插件自定义的，TShock 不会自动授予 —— 没授予的话死亡点会"静默不记录"，
+        // 所以启动时明确打出来，避免重新踩这个坑。
+        TShock.Log.Info($"[BetterBack] 需要的权限（请授予玩家组）: {PermissionUse}(记录/传送) {PermissionBuff} {PermissionGod}");
     }
 
     public override ValueTask DisposeAsync(bool isDisposing)

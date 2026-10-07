@@ -50,7 +50,10 @@ public sealed class BetterBackConfig
     [JsonPropertyName("禁止记录未击败骷髅王的地牢死亡")] public bool BlockDungeonDeathBeforeSkeletron { get; set; } = true;
     [JsonPropertyName("禁止记录未击败世纪之花的神庙死亡")] public bool BlockTempleDeathBeforePlantera { get; set; } = true;
 
-    private BetterBackConfig() { }
+    // ⚠️ 必须是 public：System.Text.Json 反序列化要求公开无参构造函数
+    //（Newtonsoft 允许 private，所以上游是 private 的 —— 这个差异会让 Load() 直接抛
+    //  NotSupportedException，而且只在配置文件已存在时才暴露）
+    public BetterBackConfig() { }
 
     public void Load()
     {

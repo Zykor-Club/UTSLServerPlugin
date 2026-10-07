@@ -87,3 +87,27 @@
 >
 > 如果希望重启后保留，需要在 `DataManager` 里接 linq2db（走 `TShock.DB`）落库 —— 属于功能增强，
 > 没有擅自加，需要的话可以单独做。
+
+## ⚠️ 安装后必须授权
+
+这几个权限是**插件自定义**的，TShock 不会自动授予 —— 没授予的话**死亡点会"静默不记录"**，
+表现就是"死了没反应、/bet 说没有"，很容易误判成插件坏了。插件启动时会在日志里打印提示：
+
+```
+[BetterBack] 需要的权限（请授予玩家组）: betterback.use(记录/传送) betterback.buff betterback.god
+```
+
+授权示例（TShock 命令）：
+
+```
+/group addperm default betterback.use
+/group addperm admin betterback.buff
+/group addperm admin betterback.god
+```
+
+| 权限 | 作用 |
+|:--|:--|
+| `betterback.use` | 记录死亡点 + `/bet` 全部子命令 |
+| `betterback.buff` | `/betbuff` |
+| `betterback.god` | `/betgod` |
+| `betterback.admin` | 预留（当前代码未使用） |
