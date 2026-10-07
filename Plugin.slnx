@@ -6,6 +6,7 @@
   <Folder Name="/Files/">
     <File Path="template.targets" />
   </Folder>
+  <Project Path="src/BossCommandExecutor/BossCommandExecutor.csproj" />
   <Project Path="src/CustomDeathMessages/CustomDeathMessages.csproj" />
   <Project Path="src/GroupBlacklist/GroupBlacklist.csproj" />
   <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>BossCommandExecutor</AssemblyName>
+        <RootNamespace>BossCommandExecutor</RootNamespace>
+        <Version>1.5.0</Version>
+    </PropertyGroup>
+
+</Project>
