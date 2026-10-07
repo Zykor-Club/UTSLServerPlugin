@@ -166,11 +166,13 @@ namespace BossCommandExecutor
             Configuration.BossCommandConfig? config = FindBossConfig(npc.type);
             if (config == null) return;
 
-            if (BossTracker.MultiSegmentBossMap.ContainsKey(npc.type))
-            {
-                TShock.Log.Debug($"[BossCommand] 多体节Boss {npc.FullName} 体节死亡，等待OnBossKilled钩子处理");
-                return;
-            }
+            // 诊断：把触发时的血量/存活状态打出来（用于确认是否为"死亡前误触发"）
+            TShock.Log.Info($"[BossCommand] checkDead 触发: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax} active={npc.active}");
+
+            // ⚠️ 与上游不同：上游在这里对"多体节 Boss"直接 return，指望 OnBossKilled 接手。
+            // 但 TryProcessDeath 自己就实现了"所有体节都死光才返回 true"的判定，而且
+            // 不依赖 OnBossKilled 是否会触发（实测世界吞噬者这条路径不可靠）。
+            // 所以这里不再提前返回，交给 TryProcessDeath 判定；与 OnBossKilled 的重复由 TryClaimKill 兜底。
 
             // 与 OnBossKilled 互斥：同一次死亡只执行一次命令
             if (!TryClaimKill(server, npc))
@@ -251,10 +253,19 @@ namespace BossCommandExecutor
             ServerContext? server = FindServerForNpc(npc);
             if (server is null) return;
 
+            TShock.Log.Info($"[BossCommand] OnBossKilled 触发: {npc.FullName} type={npc.type} idx={npc.whoAmI} life={npc.life}/{npc.lifeMax} active={npc.active}");
+
+            // 伤害排行广播属于"伤害追踪"的职责，跟命令执行是两回事：
+            // 必须放在命令去重之前，否则单体节 Boss 会被 OnNpcKilled 先去重掉，排行榜永远不播。
+            if (Config.AutoBroadcastDamageRanking)
+            {
+                _damageRanker.Broadcast(server, self, npc);
+            }
+
             // 与 OnNpcKilled 互斥：同一次死亡只执行一次命令
             if (!TryClaimKill(server, npc))
             {
-                TShock.Log.Debug($"[BossCommand] OnBossKilled: 该死亡已由 NpcKilled 处理，跳过: {config.Name}");
+                TShock.Log.Debug($"[BossCommand] OnBossKilled: 该死亡已由 NpcKilled 处理，命令不重复执行: {config.Name}");
                 return;
             }
 
@@ -266,11 +277,6 @@ namespace BossCommandExecutor
 
             TShock.Log.Info($"[BossCommand] OnBossKilled钩子触发: {config.Name}");
             Task.Run(() => ProcessBossKill(server, config, npc));
-
-            if (Config.AutoBroadcastDamageRanking)
-            {
-                _damageRanker.Broadcast(server, self, npc);
-            }
         }
 
         private async Task ProcessBossKill(ServerContext server, Configuration.BossCommandConfig config, NPC npc)
