@@ -1,0 +1,8 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# 工作区说明文件：本地保留，不提交
+AGENT.md
