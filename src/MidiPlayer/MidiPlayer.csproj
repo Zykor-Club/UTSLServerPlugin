@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>MidiPlayer</AssemblyName>
+        <RootNamespace>MidiPlayer</RootNamespace>
+        <Version>1.4.5.5</Version>
+    </PropertyGroup>
+
+    <!--
+        Melanchall.DryWetMidi 是编译期需要、但**不打进包**的第三方依赖。
+        template.targets 里 CopyLocalLockFileAssemblies=false，所以 out/ 里不会出现它的 DLL；
+        运行时由 UTSL 的模块依赖机制按 MidiPlayerDependencyProvider 的声明自动拉取
+        （见 AssemblyInfo.cs 的 [assembly: ModuleDependencies<...>] 与 UTSL 自带的 Atelier 插件）。
+    -->
+    <ItemGroup>
+        <PackageReference Include="Melanchall.DryWetMidi" Version="8.0.3"/>
+    </ItemGroup>
+
+</Project>
