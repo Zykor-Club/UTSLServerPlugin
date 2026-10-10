@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "按世界执行指令的 REST 通道：/world/list 与 /world/command，供外部管理器统一控制多世界"
+  },
+  "README.en-US": {
+    "Description": "Per-world REST command channel for UnifierTSL (/world/list, /world/command)"
+  }
+}
