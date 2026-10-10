@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "生成多世界独立地图图片，并可按世界链横向拼接成一张大图"
+  },
+  "README.en-US": {
+    "Description": "Render per-world map images and stitch multiple worlds into one big map"
+  }
+}

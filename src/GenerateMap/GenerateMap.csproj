@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>GenerateMap</AssemblyName>
+        <RootNamespace>GenerateMap</RootNamespace>
+        <Version>2.2.0</Version>
+    </PropertyGroup>
+
+    <!--
+        SixLabors.ImageSharp 是编译期需要、不打进包的依赖（template.targets 里
+        CopyLocalLockFileAssemblies=false）。运行时由 UTSL 的模块依赖机制按
+        GenerateMapDependencyProvider 的声明自动拉取，见 AssemblyInfo.cs。
+    -->
+    <ItemGroup>
+        <PackageReference Include="SixLabors.ImageSharp" Version="3.1.5"/>
+    </ItemGroup>
+
+</Project>
