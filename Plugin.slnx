@@ -6,9 +6,12 @@
   <Folder Name="/Files/">
     <File Path="template.targets" />
   </Folder>
+  <Project Path="src/AutoResetPlus/AutoResetPlus.csproj" />
   <Project Path="src/BetterBack/BetterBack.csproj" />
   <Project Path="src/BossCommandExecutor/BossCommandExecutor.csproj" />
   <Project Path="src/CustomDeathMessages/CustomDeathMessages.csproj" />
+  <Project Path="src/EdgeStitch/EdgeStitch.csproj" />
+  <Project Path="src/GenerateMap/GenerateMap.csproj" />
   <Project Path="src/GroupBlacklist/GroupBlacklist.csproj" />
   <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />
   <Project Path="src/ItemPool/ItemPool.csproj" />

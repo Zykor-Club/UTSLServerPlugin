@@ -53,9 +53,10 @@ jobs:
       - name: Checkout UnifierTSL
         uses: actions/checkout@v7
         with:
-          repository: CedaryCat/UnifierTSL
+          repository: Zykor-Club/UnifierTSL
           path: UnifierTSL
-          # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
+          # 用 Zykor-Club 的 fork（带自定义世界长度/高度补丁 + NetGreetPlayer 等钩子）；
+            # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
           # 浅克隆会被它直接拒绝（Repository is a shallow clone）
           fetch-depth: 0
       - name: Setup .NET
@@ -96,9 +97,10 @@ jobs:
       - name: Checkout UnifierTSL
         uses: actions/checkout@v7
         with:
-          repository: CedaryCat/UnifierTSL
+          repository: Zykor-Club/UnifierTSL
           path: UnifierTSL
-          # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
+          # 用 Zykor-Club 的 fork（带自定义世界长度/高度补丁 + NetGreetPlayer 等钩子）；
+            # 必须完整历史：UTSL 的项目用 GitVersion.MsBuild 算版本号，
           # 浅克隆会被它直接拒绝（Repository is a shallow clone）
           fetch-depth: 0
       - name: Setup .NET
