@@ -311,6 +311,12 @@ public sealed class RuYouMusicPlugin : BasePlugin
             if (cmd == UpFinished)
             {
                 long tid = BitConverter.ToInt64(raw.Slice(1 + PayloadOffset, 8));
+                if (Current is not null && Current.Id == tid && Current.DurationMs > 20000 && c.LastPosMs > 0 && c.LastPosMs < Current.DurationMs - 15000)
+                {
+                    // ★ 老客户端不上报事件，但会发 FINISHED 和 POSITION：播到一半就结束基本就是直链失效/下载失败
+                    RecordFailure(who, name, Current.Name, Current.Id, "客户端提前结束",
+                        "播到 " + (c.LastPosMs / 1000) + "s / 共 " + (Current.DurationMs / 1000) + "s（多为直链失效或下载失败）");
+                }
                 if (Current is not null && Current.Id == tid) { TShock.Log.Info("[RuYouMusic] " + name + " 播放结束: " + Current.Name); Next(); }
                 return;
             }
@@ -630,6 +636,23 @@ public sealed class RuYouMusicPlugin : BasePlugin
 
     private static string CacheKey(Track t) => t.Source + "|" + t.RemoteId;
 
+    /// <summary>播放前确认直链还新鲜：队列里可能等很久，网易云直链带时间戳、joox 的 vkey 更短命，过期了客户端就会「拿不到直链」。</summary>
+    private static async Task EnsureFreshUrlAsync(Track t)
+    {
+        if (ResolveCache.TryGetValue(CacheKey(t), out Resolved? c)
+            && c.Playable && c.Url.Length > 0 && c.Url == t.Url
+            && NowMs - c.AtMs < 10 * 60 * 1000)
+        {
+            return;   // 10 分钟内解析过，直接用
+        }
+        t.Url = "";
+        ResolveCache.TryRemove(CacheKey(t), out _);
+        if (!await ResolveUrlAsync(t, 2))
+        {
+            TShock.Log.Warning("[RuYouMusic] 播放前重解析仍无直链: " + t.Name);
+        }
+    }
+
     private static async Task FillUrlAndDurationAsync(Track t) => await FillUrlAndDurationAsync(t, false).ConfigureAwait(false);
 
     private static async Task<bool> FillUrlAndDurationAsync(Track t, bool fast)
@@ -821,7 +844,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
             if (Current is null) { depth = 0; }
             else { Queue.Add(t); depth = Queue.Count; }
         }
-        if (depth == 0) { Play(t); return "开始播放：" + t.Name + " - " + t.Artist; }
+        if (depth == 0) { await EnsureFreshUrlAsync(t); Play(t); return "开始播放：" + t.Name + " - " + t.Artist; }
         if (depth == 1) { SendPrefetchToAll(); }   // 刚好成为下一首 → 立刻让客户端预下载
         return "已加入队列第 " + depth + " 位：" + t.Name + " - " + t.Artist;
     }
