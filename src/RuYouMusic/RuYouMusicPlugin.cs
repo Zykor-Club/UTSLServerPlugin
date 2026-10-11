@@ -39,7 +39,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private const byte IdProbe = 129;
     private const byte IdDown = 67;
     private const byte IdUp = 15;
-    private const int FrameSize = 260;
+    private const int FrameSize = 1024;   // ★ 原来是 260：歌名+歌手占掉后，直链只剩 ~160 字节，
+                                       //   稍长的 URL 会被静默截断 → 客户端下到 400/403（"有一些歌能放、有一些失败"的元凶）
     private const int PayloadOffset = 16;      // 载荷内数据起点
     private const int FrameDataOffset = 3 + PayloadOffset;   // ★ 帧内数据起点：2 字节长度 + 1 字节类型，再 +16
                                                              //   （踩过坑：直接拿 PayloadOffset 写 frame 会整体提前 3 字节，
@@ -445,6 +446,10 @@ public sealed class RuYouMusicPlugin : BasePlugin
         int n = Math.Min(b.Length, ushort.MaxValue);
         BitConverter.TryWriteBytes(buf.AsSpan(pos, 2), (ushort)n);
         int room = Math.Max(0, Math.Min(n, buf.Length - pos - 2));
+        if (room < n)
+        {
+            TShock.Log.Warning("[RuYouMusic] 载荷放不下被截断: 需要 " + n + " 字节，只剩 " + room + "（帧 " + FrameSize + "）");
+        }
         Array.Copy(b, 0, buf, pos + 2, room);
         return pos + 2 + room;
     }

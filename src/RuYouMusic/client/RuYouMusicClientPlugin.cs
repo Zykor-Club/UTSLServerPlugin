@@ -86,6 +86,12 @@ public class ClientMain
                     string artist = ReadStr(r);
                     string url = "";
                     try { url = ReadStr(r); } catch { url = ""; }   // v2：服务端解析好的直链
+                    // ★ 直链校验：被截断的 URL 请求出去只会得到 400/403，宁可当没有（走自解析）
+                    if (url.Length > 0 && (url.IndexOf("://") < 0 || url.Length < 25))
+                    {
+                        Log("服务端直链疑似被截断（长度 " + url.Length + "），丢弃: " + url);
+                        url = "";
+                    }
                     Log("收到 PLAY: id=" + trackId + " 偏移=" + offsetMs + "ms 音量=" + vol + " 歌名=" + name + " 歌手=" + artist
                         + " 直链=" + (url.Length == 0 ? "(空)" : url.Substring(0, Math.Min(70, url.Length)) + "..."));
                     Music.SetVolume(vol);
