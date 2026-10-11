@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "点歌机服务端：搜索 / 队列 / 下发客户端播放 / 歌词同步，REST + 游戏内指令暴露（配套客户端插件 R.RuYouMusic 风格）"
+  },
+  "README.en-US": {
+    "Description": "Server side music request queue: search, queue, push playback commands to clients, lyrics; exposed over REST and in-game commands"
+  }
+}
