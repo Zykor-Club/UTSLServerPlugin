@@ -59,6 +59,18 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private static string[] _sources = { "netease" };   // 实测 joox 当前返回空直链；netease 稳定，受限歌曲走「同名可播放版本」兜底
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(12) };
 
+    // ★ 直链解析缓存 + 全局节流：频繁请求会把公共接口打到 503（实测 12 连发就出现 HTML 错误页），
+    //   而面板 check=1 搜索原来一条结果要 2 个请求、8 条结果就是 16 个请求 → 自己把自己限流了。
+    private sealed class Resolved { public string Url = ""; public long DurationMs; public long AtMs; public bool Playable; }
+    private static readonly ConcurrentDictionary<string, Resolved> ResolveCache = new();
+    private static readonly SemaphoreSlim ApiGate = new(1, 1);
+    private static long _lastApiMs;
+    private static long _cacheHits;
+    private static long _apiCalls;
+    private const int ApiGapMs = 300;          // 两次接口请求之间至少间隔
+    private const int UrlTtlMs = 15 * 60 * 1000;   // 直链有效期（网易云直链带时间戳，过期就得重解析）
+    private const int NegTtlMs = 5 * 60 * 1000;    // 「取不到」也记 5 分钟，避免反复重试同一首
+
     // ===== 状态 =====
     private sealed class ClientState
     {
@@ -81,7 +93,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
         public long Id;                 // 对外/协议用的稳定 id（由 音源+远端id 哈希得来，跨会话一致 → 客户端缓存可复用）
         public string Source = "netease";   // 音源：netease / joox
         public string RemoteId = "";        // 音源内的原始 id（joox 是 24 位 base64，必须 URL 转义）
-        public string UrlId = "";           // 取直链专用 id（搜索结果里的 url_id，部分歌与 id 不同）
+        public string UrlId = "";
+        public string Album = "";           // 取直链专用 id（搜索结果里的 url_id，部分歌与 id 不同）
         public string Name = "";
         public string Artist = "";
         public long DurationMs;
@@ -520,8 +533,13 @@ public sealed class RuYouMusicPlugin : BasePlugin
 
     private static async Task<JsonDocument?> GetJsonAsync(string url)
     {
+        await ApiGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            long gap = ApiGapMs - (NowMs - _lastApiMs);
+            if (gap > 0) { await Task.Delay((int)gap).ConfigureAwait(false); }
+            _lastApiMs = NowMs;
+            _apiCalls++;
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
             if (_apiHeaders.Length > 0)
@@ -537,14 +555,22 @@ public sealed class RuYouMusicPlugin : BasePlugin
             using (HttpResponseMessage resp = await Http.SendAsync(req).ConfigureAwait(false))
             {
                 body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    TShock.Log.Warning("[RuYouMusic] API HTTP " + (int)resp.StatusCode + "（可能被限流）");
+                    await Task.Delay(800).ConfigureAwait(false);   // 退避，别把接口打得更死
+                    return null;
+                }
             }
             return JsonDocument.Parse(body);
         }
         catch (Exception ex)
         {
             TShock.Log.Warning("[RuYouMusic] API 失败: " + ex.Message);
+            await Task.Delay(600).ConfigureAwait(false);
             return null;
         }
+        finally { ApiGate.Release(); }
     }
 
     private static async Task<List<Track>> SearchAsync(string kw, int count, string source = "netease")
@@ -558,7 +584,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
             string rid = Str(e, "id");
             if (rid.Length == 0) { continue; }
             string uid = Str(e, "url_id");
-            var t = new Track { Name = Str(e, "name"), Source = source, RemoteId = rid, UrlId = uid.Length > 0 ? uid : rid, Id = StableId(source, rid) };
+            var t = new Track { Name = Str(e, "name"), Album = Str(e, "album"), Source = source, RemoteId = rid, UrlId = uid.Length > 0 ? uid : rid, Id = StableId(source, rid) };
             if (e.TryGetProperty("artist", out JsonElement ar) && ar.ValueKind == JsonValueKind.Array)
             {
                 var names = new List<string>();
@@ -571,17 +597,17 @@ public sealed class RuYouMusicPlugin : BasePlugin
     }
 
     /// <summary>解析直链+时长，失败自动重试（公共接口会 503/偶发空值）。</summary>
-    private static async Task<bool> ResolveUrlAsync(Track t, int tries)
+    private static async Task<bool> ResolveUrlAsync(Track t, int tries, bool fast = false)
     {
         for (int i = 0; i < Math.Max(1, tries); i++)
         {
             try
             {
-                await FillUrlAndDurationAsync(t);
+                if (await FillUrlAndDurationAsync(t, fast)) { return true; }
                 if (!string.IsNullOrEmpty(t.Url)) { return true; }
             }
             catch { }
-            if (i + 1 < tries) { await Task.Delay(700); }
+            if (i + 1 < tries) { await Task.Delay(fast ? 400 : 900); }
         }
         return !string.IsNullOrEmpty(t.Url);
     }
@@ -602,11 +628,29 @@ public sealed class RuYouMusicPlugin : BasePlugin
         return null;
     }
 
-    private static async Task FillUrlAndDurationAsync(Track t)
+    private static string CacheKey(Track t) => t.Source + "|" + t.RemoteId;
+
+    private static async Task FillUrlAndDurationAsync(Track t) => await FillUrlAndDurationAsync(t, false).ConfigureAwait(false);
+
+    private static async Task<bool> FillUrlAndDurationAsync(Track t, bool fast)
     {
+        // ★ 先查缓存：面板搜索解析过的直链，点歌时直接复用（0 次接口请求）
+        string key = CacheKey(t);
+        if (ResolveCache.TryGetValue(key, out Resolved? c))
+        {
+            long age = NowMs - c.AtMs;
+            if (c.Playable && age < UrlTtlMs && c.Url.Length > 0)
+            {
+                Interlocked.Increment(ref _cacheHits);
+                t.Url = c.Url;
+                if (t.DurationMs <= 0) { t.DurationMs = c.DurationMs; }
+                return true;
+            }
+            if (!c.Playable && age < NegTtlMs) { return false; }
+        }
         // ★ 用 url_id（部分歌与 id 不同）；并依次尝试 320/128 码率——某些歌只有低码率可取
         string rid = t.UrlId.Length > 0 ? t.UrlId : t.RemoteId;
-        foreach (int br in new[] { 320, 128 })
+        foreach (int br in (fast ? new[] { 320 } : new[] { 320, 128 }))
         {
             string url = _apiBase + "?types=url&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(rid) + "&br=" + br + Sign(Uri.EscapeDataString(rid)) + Extra();
             using JsonDocument? doc = await GetJsonAsync(url);
@@ -618,8 +662,65 @@ public sealed class RuYouMusicPlugin : BasePlugin
             long size = Long(r, "size");
             long brr = Long(r, "br");
             if (size > 0 && brr > 0) { t.DurationMs = (long)(size / (double)(brr * 125) * 1000.0); }
-            return;
+            ResolveCache[key] = new Resolved { Url = u, DurationMs = t.DurationMs, AtMs = NowMs, Playable = true };
+            return true;
         }
+        // ★ 兜底：autosource —— 按 歌名/歌手 让服务端换个能播的音源（网页能放 VIP 歌就是靠它；
+        //   公共 API 这个接口是空的，只有自建网关的浏览器模式（带站点自己的会话）才拿得到）
+        if (!fast && t.Name.Length > 0)
+        {
+            string payload = "{\"name\":\"" + JsonEsc(t.Name) + "\",\"artist\":\"" + JsonEsc(t.Artist) + "\",\"album\":\"" + JsonEsc(t.Album) + "\",\"isrc\":\"\",\"duration\":" + (t.DurationMs > 0 ? t.DurationMs : 0) + "}";
+            string autoUrl = _apiBase + "?types=autosource&source=" + Uri.EscapeDataString(t.Source) + "&br=320&name=" + Uri.EscapeDataString(payload) + Sign(payload) + Extra();
+            string u2 = "";
+            JsonElement r2 = default;
+            for (int attempt = 0; attempt < 2 && u2.Length == 0; attempt++)   // ★ 站点 autosource 是间歇性的，空结果就再试一次
+            {
+                if (attempt > 0) { await Task.Delay(1500).ConfigureAwait(false); }
+                using JsonDocument? doc2 = await GetJsonAsync(autoUrl);
+                if (doc2 is null) { continue; }
+                r2 = doc2.RootElement;
+                u2 = Str(r2, "url");
+            }
+            if (true)
+            {
+                if (u2.Length > 0)
+                {
+                    t.Url = u2;
+                    string src2 = Str(r2, "source");
+                    string nm2 = Str(r2, "name");
+                    if (src2.Length > 0) { t.Source = src2; }
+                    if (nm2.Length > 0 && t.Name.Length == 0) { t.Name = nm2; }
+                    long size2 = Long(r2, "size");
+                    long brr2 = Long(r2, "br");
+                    if (size2 > 0 && brr2 > 0) { t.DurationMs = (long)(size2 / (double)(brr2 * 125) * 1000.0); }
+                    ResolveCache[key] = new Resolved { Url = u2, DurationMs = t.DurationMs, AtMs = NowMs, Playable = true };
+                    TShock.Log.Info("[RuYouMusic] autosource 兜底成功: " + t.Name + " → " + (src2.Length > 0 ? src2 : "?"));
+                    return true;
+                }
+            }
+        }
+        ResolveCache[key] = new Resolved { Playable = false, AtMs = NowMs };
+        return false;
+    }
+
+    /// <summary>极简 JSON 字符串转义。</summary>
+    private static string JsonEsc(string v)
+    {
+        if (string.IsNullOrEmpty(v)) { return ""; }
+        var sb = new StringBuilder(v.Length + 8);
+        foreach (char ch in v)
+        {
+            switch (ch)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default: if (ch < 0x20) { sb.Append("\\u").Append(((int)ch).ToString("x4")); } else { sb.Append(ch); } break;
+            }
+        }
+        return sb.ToString();
     }
 
     private static async Task FetchLyricsAsync(Track t)
@@ -831,7 +932,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
         foreach (Track t in found)
         {
             bool playable = false;
-            if (check) { playable = ResolveUrlAsync(t, 1).GetAwaiter().GetResult(); }
+            if (check) { playable = ResolveUrlAsync(t, 1, true).GetAwaiter().GetResult(); }
             list.Add(new { id = t.Id, name = t.Name, artist = t.Artist, source = t.Source, playable = check ? playable : true });
         }
         return new { status = "200", query = q, didCheck = check, results = list };
@@ -884,6 +985,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
 
     private static object FailuresApi(RestRequestArgs args)
     {
+        if (IsOn(GetParam(args, "clearCache"))) { ResolveCache.Clear(); return new { status = "200", message = "已清空直链缓存" }; }
         if (IsOn(GetParam(args, "clear"))) { lock (Sync) { Failures.Clear(); } return new { status = "200", message = "已清空失败记录" }; }
         int limit = Math.Clamp(GetInt(args, "limit", 20), 1, 60);
         long now = NowMs;
@@ -930,6 +1032,9 @@ public sealed class RuYouMusicPlugin : BasePlugin
             volumePercent = _volumePercent,
             configPath = _configPath ?? "",
             api = _apiBase,
+            apiCalls = _apiCalls,
+            cacheHits = _cacheHits,
+            cacheSize = ResolveCache.Count,
             apiSign = _apiSign,
             apiExtra = _apiExtra,
             apiHeaders = _apiHeaders.Length > 0 ? "(已设置)" : "",
