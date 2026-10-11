@@ -77,6 +77,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
         public long Id;                 // 对外/协议用的稳定 id（由 音源+远端id 哈希得来，跨会话一致 → 客户端缓存可复用）
         public string Source = "netease";   // 音源：netease / joox
         public string RemoteId = "";        // 音源内的原始 id（joox 是 24 位 base64，必须 URL 转义）
+        public string UrlId = "";           // 取直链专用 id（搜索结果里的 url_id，部分歌与 id 不同）
         public string Name = "";
         public string Artist = "";
         public long DurationMs;
@@ -93,6 +94,27 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private static readonly ConcurrentDictionary<int, ClientState> Clients = new();
     private static readonly List<Track> Queue = new();
     private static readonly List<LyricLine> Lyrics = new();
+
+    /// <summary>最近失败记录（面板直接看，不用翻日志）。</summary>
+    private sealed class FailRec
+    {
+        public long Ms; public int Who; public string Player = ""; public string Song = ""; public long TrackId = -1; public string Stage = ""; public string Reason = "";
+    }
+    private static readonly List<FailRec> Failures = new();
+
+    private static void RecordFailure(int who, string player, string song, long trackId, string stage, string reason)
+    {
+        try
+        {
+            lock (Sync)
+            {
+                Failures.Add(new FailRec { Ms = NowMs, Who = who, Player = player, Song = song, TrackId = trackId, Stage = stage, Reason = reason });
+                while (Failures.Count > 60) { Failures.RemoveAt(0); }
+            }
+            TShock.Log.Warning("[RuYouMusic] 失败: " + stage + " | " + player + " | " + song + " | " + reason);
+        }
+        catch { }
+    }
     private static readonly object Sync = new();
     private static readonly object ApiLock = new();
     private static Track? Current;
@@ -152,6 +174,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
         TShock.RestApi.Register(new SecureRestCommand("/music/remove", Remove, RestPermissions.restapi));
         TShock.RestApi.Register(new SecureRestCommand("/music/clear", ClearQueue, RestPermissions.restapi));
         TShock.RestApi.Register(new SecureRestCommand("/music/config", ConfigApi, RestPermissions.restapi));
+        TShock.RestApi.Register(new SecureRestCommand("/music/failures", FailuresApi, RestPermissions.restapi));
 
         TShockAPI.Commands.ChatCommands.Add(new Command(_commandPermission, MusicCommand, "music", "点歌"));
 
@@ -230,6 +253,11 @@ public sealed class RuYouMusicPlugin : BasePlugin
                 c.LastEventTrackId = tid;
                 c.LastEventMsg = msg;
                 TShock.Log.Info("[RuYouMusic] " + name + " → " + EventName(kind) + " (id=" + tid + ")" + (msg.Length > 0 ? " " + msg : ""));
+                if (IsFailure(kind))
+                {
+                    string songName = Current is not null && Current.Id == tid ? Current.Name : ("id " + tid);
+                    RecordFailure(who, name, songName, tid, EventName(kind), msg.Length > 0 ? msg : EventName(kind));
+                }
                 return;
             }
 
@@ -485,7 +513,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
         {
             string rid = Str(e, "id");
             if (rid.Length == 0) { continue; }
-            var t = new Track { Name = Str(e, "name"), Source = source, RemoteId = rid, Id = StableId(source, rid) };
+            string uid = Str(e, "url_id");
+            var t = new Track { Name = Str(e, "name"), Source = source, RemoteId = rid, UrlId = uid.Length > 0 ? uid : rid, Id = StableId(source, rid) };
             if (e.TryGetProperty("artist", out JsonElement ar) && ar.ValueKind == JsonValueKind.Array)
             {
                 var names = new List<string>();
@@ -531,14 +560,22 @@ public sealed class RuYouMusicPlugin : BasePlugin
 
     private static async Task FillUrlAndDurationAsync(Track t)
     {
-        string url = ApiBase + "?types=url&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(t.RemoteId) + "&br=320";
-        using JsonDocument? doc = await GetJsonAsync(url);
-        if (doc is null) { return; }
-        JsonElement r = doc.RootElement;
-        t.Url = Str(r, "url");
-        long size = Long(r, "size");
-        long br = Long(r, "br");
-        if (size > 0 && br > 0) { t.DurationMs = (long)(size / (double)(br * 125) * 1000.0); }
+        // ★ 用 url_id（部分歌与 id 不同）；并依次尝试 320/128 码率——某些歌只有低码率可取
+        string rid = t.UrlId.Length > 0 ? t.UrlId : t.RemoteId;
+        foreach (int br in new[] { 320, 128 })
+        {
+            string url = ApiBase + "?types=url&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(rid) + "&br=" + br;
+            using JsonDocument? doc = await GetJsonAsync(url);
+            if (doc is null) { continue; }
+            JsonElement r = doc.RootElement;
+            string u = Str(r, "url");
+            if (u.Length == 0) { continue; }
+            t.Url = u;
+            long size = Long(r, "size");
+            long brr = Long(r, "br");
+            if (size > 0 && brr > 0) { t.DurationMs = (long)(size / (double)(brr * 125) * 1000.0); }
+            return;
+        }
     }
 
     private static async Task FetchLyricsAsync(Track t)
@@ -626,7 +663,11 @@ public sealed class RuYouMusicPlugin : BasePlugin
                 if (any.Count == 0) { return "没有搜到：" + idOrQuery; }
             }
         }
-        if (t is null) { return "取不到可播放的直链（接口限流或版权受限），换一首歌或稍后重试"; }
+        if (t is null)
+        {
+            RecordFailure(-1, by, hint.Length > 0 ? hint : (idOrQuery ?? ""), -1, "解析直链", "接口限流/版权受限，取不到直链");
+            return "取不到可播放的直链（接口限流或版权受限），换一首歌或稍后重试";
+        }
         int depth;
         lock (Sync)
         {
@@ -795,6 +836,24 @@ public sealed class RuYouMusicPlugin : BasePlugin
     {
         lock (Sync) { Queue.Clear(); }
         return new { status = "200", message = "队列已清空" };
+    }
+
+    private static object FailuresApi(RestRequestArgs args)
+    {
+        if (IsOn(GetParam(args, "clear"))) { lock (Sync) { Failures.Clear(); } return new { status = "200", message = "已清空失败记录" }; }
+        int limit = Math.Clamp(GetInt(args, "limit", 20), 1, 60);
+        long now = NowMs;
+        lock (Sync)
+        {
+            return new
+            {
+                status = "200",
+                count = Failures.Count,
+                failures = Failures.Skip(Math.Max(0, Failures.Count - limit)).Reverse()
+                    .Select(f => new { agoMs = Math.Max(0, now - f.Ms), who = f.Who, player = f.Player, song = f.Song, trackId = f.TrackId, stage = f.Stage, reason = f.Reason })
+                    .ToList()
+            };
+        }
     }
 
     private static object ConfigApi(RestRequestArgs args)

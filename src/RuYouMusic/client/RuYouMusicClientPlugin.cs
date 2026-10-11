@@ -374,9 +374,9 @@ internal static class Music
         catch (Exception ex)
         {
             ClientMain.Log("下载/准备失败(第 " + (retry + 1) + " 次): " + ex.GetType().Name + ": " + ex.Message);
-            if (retry < 3)
+            if (retry < 1)   // ★ 只重试 1 次（原来 3 次≈8 秒，一首卡住会把队列拖死）；失败尽快上报让服务端跳下一首
             {
-                Thread.Sleep(retry == 0 ? 1500 : 2500);
+                Thread.Sleep(1200);
                 DownloadAndPlay(trackId, path, retry + 1, retry >= 1 ? "" : serverUrl);   // 服务端直链失败后改用客户端自解析
                 return;
             }
