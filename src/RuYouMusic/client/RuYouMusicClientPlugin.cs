@@ -121,11 +121,19 @@ public class ClientMain
 
     private static void OnPlayerUpdate() { try { Music.Update(); } catch { } }
 
+    private static long _menuSinceMs;   // 菜单态起始时间（0=不在菜单）
+
     private static void OnPreUpdate(HandledEventArgs e)
     {
         try
         {
-            if (Main.gameMenu) { Authed = false; Music.StopAll(); }   // StopAll 内部已做幂等，不会每帧重复发 MCI
+            if (!Main.gameMenu) { _menuSinceMs = 0; return; }
+            long now = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
+            if (_menuSinceMs == 0) { _menuSinceMs = now; return; }
+            // ★ 刚进服/切世界时 gameMenu 会短暂为真：必须等它连续 3 秒才认定"真的回到主菜单"，
+            //   否则会把刚收到的 PLAY 立刻掐掉（实测"刚进服最容易没声音"就是这个）
+            if (now - _menuSinceMs < 3000) { return; }
+            if (Authed || Music.IsPlaying) { Authed = false; Music.StopAll(); }
         }
         catch { }
     }
@@ -207,6 +215,8 @@ internal static class Music
 
     private static long NowMs { get { return DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond; } }
 
+    internal static bool IsPlaying { get { lock (Sync) { return _playing; } } }
+
     internal static string CacheDir()
     {
         if (_cacheDir == null)
@@ -219,21 +229,46 @@ internal static class Music
     }
 
     private static int _prefetching;
+    private static long _pfId = -1;
+    private static string _pfName = "", _pfArtist = "", _pfUrl = "";
 
-    /// <summary>预取：只把下一首下载进缓存，不碰播放状态；切歌时命中缓存即可秒开。</summary>
+    /// <summary>记账预取：先记下来，等当前曲的下载/起播忙完再跑，避免和正在播的歌抢带宽。</summary>
     internal static void Prefetch(long trackId, string name, string artist, string url)
     {
         if (trackId <= 0) { return; }
         string path = Path.Combine(CacheDir(), trackId + ".mp3");
         try { if (File.Exists(path) && new FileInfo(path).Length > 1024) { ClientMain.Log("预取跳过（已有缓存）: " + name); return; } } catch { }
-        lock (Sync) { if (_trackId == trackId && (_playing || _downloading)) { return; } }
-        if (Interlocked.Exchange(ref _prefetching, 1) == 1) { return; }   // 一次只预取一首，避免抢带宽
+        lock (Sync)
+        {
+            if (_trackId == trackId && (_playing || _downloading)) { return; }
+            _pfId = trackId; _pfName = name; _pfArtist = artist; _pfUrl = url;
+        }
+        TryStartPrefetch();
+    }
+
+    /// <summary>条件满足才真正开始预取：一次一首，且当前没有正在进行的下载。</summary>
+    private static void TryStartPrefetch()
+    {
+        long id; string name, artist, url;
+        lock (Sync)
+        {
+            if (_pfId <= 0 || _downloading) { return; }
+            id = _pfId; name = _pfName; artist = _pfArtist; url = _pfUrl;
+            _pfId = -1;
+        }
+        if (Interlocked.Exchange(ref _prefetching, 1) == 1)
+        {
+            lock (Sync) { if (_pfId <= 0) { _pfId = id; _pfName = name; _pfArtist = artist; _pfUrl = url; } }
+            return;
+        }
         ThreadPool.QueueUserWorkItem(delegate
         {
             try
             {
+                string path = Path.Combine(CacheDir(), id + ".mp3");
+                if (File.Exists(path) && new FileInfo(path).Length > 1024) { ClientMain.Log("预取跳过（已有缓存）: " + name); return; }
                 string use = url;
-                if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取: 服务端没给直链，自己解析 " + name); use = FetchUrl(trackId); }
+                if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取: 服务端没给直链，自己解析 " + name); use = FetchUrl(id); }
                 if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取失败（无直链）: " + name); return; }
                 long n = DownloadToFile(use, path);
                 ClientMain.Log("预取完成: " + name + " " + n + " B（切歌时将秒开）");
@@ -241,9 +276,9 @@ internal static class Music
             catch (Exception ex)
             {
                 ClientMain.Log("预取失败: " + name + " " + ex.Message);
-                try { if (File.Exists(path)) { File.Delete(path); } } catch { }
+                try { string path = Path.Combine(CacheDir(), id + ".mp3"); if (File.Exists(path)) { File.Delete(path); } } catch { }
             }
-            finally { Interlocked.Exchange(ref _prefetching, 0); }
+            finally { Interlocked.Exchange(ref _prefetching, 0); TryStartPrefetch(); }
         });
     }
 
@@ -483,6 +518,7 @@ internal static class Music
                 ClientMain.Log("MCI 起播: open=" + (e1.Length == 0 ? "OK" : e1) + " | play=" + (e2.Length == 0 ? "OK" : e2) + " 起始=" + startAt + "ms");
                 lock (Sync) { _playing = e2.Length == 0; _wasPlaying = false; }
                 playing = _playing;
+                TryStartPrefetch();   // 当前曲起播后再去预取下一首
             }
             catch (Exception ex)
             {
