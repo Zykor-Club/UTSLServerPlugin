@@ -9,10 +9,10 @@
   -->
 
   <PropertyGroup>
-    <TargetFramework>net40</TargetFramework>
+    <TargetFramework>net48</TargetFramework>
     <AssemblyName>RuYouMusicClient</AssemblyName>
     <RootNamespace>RuYouMusicClient</RootNamespace>
-    <LangVersion>7.3</LangVersion>
+    <LangVersion>10.0</LangVersion>
     <Nullable>disable</Nullable>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -34,12 +34,8 @@
       <HintPath>$(GameDir)\ReLogic.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="Microsoft.Xna.Framework">
+    <Reference Include="Microsoft.Xna.Framework" Condition="Exists('$(GameDir)\Microsoft.Xna.Framework.dll')">
       <HintPath>$(GameDir)\Microsoft.Xna.Framework.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Microsoft.Xna.Framework.Game">
-      <HintPath>$(GameDir)\Microsoft.Xna.Framework.Game.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="R.PluginSwitch">
@@ -47,5 +43,28 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
+  <!-- 真实 XNA 在 GAC 里（游戏是 x86，优先 GAC_32） -->
+  <PropertyGroup>
+    <XnaPkt>v4.0_4.0.0.0__842cf8be1de50553</XnaPkt>
+    <XnaRoot Condition="'$(XnaRoot)' == '' And Exists('C:\Windows\Microsoft.NET\assembly\GAC_32\Microsoft.Xna.Framework\$(XnaPkt)\Microsoft.Xna.Framework.dll')">C:\Windows\Microsoft.NET\assembly\GAC_32</XnaRoot>
+    <XnaRoot Condition="'$(XnaRoot)' == ''">C:\Windows\Microsoft.NET\assembly\GAC_MSIL</XnaRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework\$(XnaPkt)\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework.Game\$(XnaPkt)\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework.Graphics\$(XnaPkt)\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
 
 </Project>

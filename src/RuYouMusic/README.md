@@ -81,3 +81,19 @@
 dotnet build src/RuYouMusic/RuYouMusic.csproj -c Release
 copy out\Release\RuYouMusic.dll <utsl-deploy>\plugins\
 ```
+
+## 排障与已知坑（都是实测踩过的）
+
+1. **帧内偏移**：帧是 `[长度:2][类型:1][载荷:256]`，所以**载荷偏移 N = 帧偏移 3+N**。
+   第一版把 PLAY/VOLUME 数据直接写在 `frame[16]`（少了 3），客户端按载荷偏移解析就整体错位：
+   trackId 变垃圾、音量读成 0、歌名从 UTF-8 中间开始读（「晴天」显示成「天」）并把歌手/直链一起吞掉。
+   现在统一用 `FrameDataOffset = 3 + PayloadOffset`。
+2. **重复 PLAY 竞态**：登录探测与周期探测若撞在一起，客户端会回两次 HELLO → 收到两次 SESSION/PLAY，
+   于是**二次下载同一个文件**并互相覆盖/删除，表现为「播了几秒突然失败说没拿到直链」。
+   服务端：登录探测后记 `ProbeAt`，不再立刻重探；客户端：同一首已在下载/播放时忽略重复 PLAY，
+   且只有「失败的是当前曲且当前没在播」才删文件并上报 FINISHED。
+3. **接口不稳**：`music-api.gdstudio.xyz` 会间歇 503 或返回 HTML 错误页；VIP/地区受限歌返回空直链。
+   对策：解析带重试 + 多候选 + **同名可播放版本兜底**；`/music/search?check=1` 可标注能否播放。
+   joox 音源实测 `types=url` 一律返回空（`br=-1`），已从默认音源去掉。
+4. **客户端音量** = 服务端音量 × 游戏内「音乐」音量；游戏里音乐音量为 0 时听不到。
+5. 客户端日志：`<游戏目录>\MusicCache\_client.log`（含解析出的直链、MCI 返回码、进度上报），排障先看它。

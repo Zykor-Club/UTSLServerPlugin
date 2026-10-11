@@ -39,6 +39,8 @@ public class ClientMain
 
     static ClientMain()
     {
+        try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; } catch { }   // .NET 4.x 默认可能不含 TLS1.2
+        Log("客户端插件载入（协议 v1）");
         GameHooks.NetGetData.Register(OnNetGetData);
         GameHooks.PlayerUpdate.Register(OnPlayerUpdate);
         GameHooks.PreUpdate.Register(OnPreUpdate);
@@ -70,6 +72,7 @@ public class ClientMain
             {
                 case DnSession:
                     Authed = true;
+                    Log("收到 SESSION，令牌=" + BitConverter.ToString(Token).Replace("-", ""));
                     Notify("点歌机已连接");
                     break;
                 case DnPlay:
@@ -81,11 +84,16 @@ public class ClientMain
                     r.ReadBytes(7);                      // 对齐到数据 +24
                     string name = ReadStr(r);
                     string artist = ReadStr(r);
+                    string url = "";
+                    try { url = ReadStr(r); } catch { url = ""; }   // v2：服务端解析好的直链
+                    Log("收到 PLAY: id=" + trackId + " 偏移=" + offsetMs + "ms 音量=" + vol + " 歌名=" + name + " 歌手=" + artist
+                        + " 直链=" + (url.Length == 0 ? "(空)" : url.Substring(0, Math.Min(70, url.Length)) + "..."));
                     Music.SetVolume(vol);
-                    Music.Play(trackId, name, artist, offsetMs);
+                    Music.Play(trackId, name, artist, offsetMs, url);
                     break;
                 }
                 case DnStop:
+                    Log("收到 STOP");
                     Music.Stop();
                     break;
                 case DnVolume:
@@ -94,7 +102,7 @@ public class ClientMain
             }
             e.Handled = true;
         }
-        catch (Exception ex) { Notify("收包异常: " + ex.Message); }
+        catch (Exception ex) { Log("收包异常: " + ex); Notify("收包异常: " + ex.Message); }
     }
 
     private static void OnPlayerUpdate() { try { Music.Update(); } catch { } }
@@ -103,7 +111,7 @@ public class ClientMain
     {
         try
         {
-            if (Main.gameMenu) { Authed = false; Music.StopAll(); }
+            if (Main.gameMenu) { Authed = false; Music.StopAll(); }   // StopAll 内部已做幂等，不会每帧重复发 MCI
         }
         catch { }
     }
@@ -140,6 +148,18 @@ public class ClientMain
         return Encoding.UTF8.GetString(b);
     }
 
+    /// <summary>诊断日志：写 <游戏目录>\MusicCache\_client.log（方便远程排查）。</summary>
+    internal static void Log(string msg)
+    {
+        try
+        {
+            string dir = Path.Combine(Path.GetDirectoryName(typeof(Main).Assembly.Location), "MusicCache");
+            if (!Directory.Exists(dir)) { Directory.CreateDirectory(dir); }
+            File.AppendAllText(Path.Combine(dir, "_client.log"), DateTime.Now.ToString("HH:mm:ss.fff") + "  " + msg + Environment.NewLine);
+        }
+        catch { }
+    }
+
     internal static void Notify(string msg)
     {
         try { Main.NewText("[点歌机] " + msg, 195, 177, 225); } catch { }
@@ -167,6 +187,9 @@ internal static class Music
     private static bool _pendingStop;
     private static long _startedAtMs;
     private static long _lastReportMs;
+    private static string _lastModeLogged = "";
+    private static string _url = "";
+    private static bool _downloading;
 
     private static long NowMs { get { return DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond; } }
 
@@ -181,8 +204,18 @@ internal static class Music
         return _cacheDir;
     }
 
-    internal static void Play(long trackId, string name, string artist, int offsetMs)
+    internal static void Play(long trackId, string name, string artist, int offsetMs, string url)
     {
+        // ★ 去重：同一首歌已经在下/已在播就不再重来。服务端「握手 PLAY」与「广播 PLAY」可能各发一次，
+        //   重复触发会二次下载同一个文件、互相覆盖与删除，导致播到几秒后中断（实测就是这个现象）。
+        lock (Sync)
+        {
+            if (_trackId == trackId && (_playing || _downloading || _pendingPlay))
+            {
+                ClientMain.Log("忽略重复的 PLAY（同一首已在处理: id=" + trackId + " 在播=" + _playing + " 下载中=" + _downloading + "）");
+                return;
+            }
+        }
         StopInternal(false);
         lock (Sync)
         {
@@ -191,34 +224,46 @@ internal static class Music
             _artist = artist == null ? "" : artist;
             _offsetMs = Math.Max(0, offsetMs);
             _startedAtMs = NowMs;
+            _url = url == null ? "" : url;
         }
         string path = Path.Combine(CacheDir(), trackId + ".mp3");
         if (File.Exists(path) && new FileInfo(path).Length > 1024)
         {
+            ClientMain.Log("Play: id=" + trackId + " 命中缓存 " + path);
             StartPlayback(path);
             ClientMain.Notify("开始播放: " + _name + " - " + _artist);
             return;
         }
+        ClientMain.Log("Play: id=" + trackId + " 缓存未命中，准备下载（服务端直链=" + (_url.Length == 0 ? "无" : "有") + "）");
         ClientMain.Notify("正在下载: " + _name + " - " + _artist);
-        ThreadPool.QueueUserWorkItem(delegate { DownloadAndPlay(trackId, path, 0); });
+        string u = _url;
+        lock (Sync) { _downloading = true; }
+        ThreadPool.QueueUserWorkItem(delegate { DownloadAndPlay(trackId, path, 0, u); });
     }
 
-    private static void DownloadAndPlay(long trackId, string path, int retry)
+    private static void DownloadAndPlay(long trackId, string path, int retry, string serverUrl)
     {
         try
         {
-            string url = FetchUrl(trackId);
-            if (string.IsNullOrEmpty(url)) { throw new Exception("接口未返回直链（可能版权受限）"); }
-            using (var wc = new WebClient())
+            string url = serverUrl;
+            if (string.IsNullOrEmpty(url))
             {
-                wc.Headers.Add("User-Agent", "Mozilla/5.0");
-                wc.DownloadFile(url, path);
+                ClientMain.Log("服务端没给直链，客户端自己解析 id=" + trackId + "（第 " + (retry + 1) + " 次）");
+                url = FetchUrl(trackId);
+                ClientMain.Log("自解析结果: " + (string.IsNullOrEmpty(url) ? "(空)" : url.Substring(0, Math.Min(80, url.Length)) + "..."));
             }
-            using (var f = new FileStream(path, FileMode.Open, FileAccess.Read))
+            else
             {
-                if (f.Length < 2048) { throw new Exception("文件过小"); }
+                ClientMain.Log("使用服务端直链下载（第 " + (retry + 1) + " 次）");
+            }
+            if (string.IsNullOrEmpty(url)) { throw new Exception("没拿到直链（接口限流或版权受限）"); }
+            long size = DownloadToFile(url, path);
+            ClientMain.Log("下载完成: " + size + " B → " + path);
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read))
+            {
+                if (fs.Length < 2048) { throw new Exception("文件过小"); }
                 byte[] head = new byte[2];
-                f.Read(head, 0, 2);
+                fs.Read(head, 0, 2);
                 if (head[0] == 0x4D && head[1] == 0x5A) { throw new Exception("疑似可执行文件，拒绝播放"); }
             }
             StartPlayback(path);
@@ -227,21 +272,47 @@ internal static class Music
         }
         catch (Exception ex)
         {
-            if (retry < 3) { Thread.Sleep(1000); DownloadAndPlay(trackId, path, retry + 1); return; }
+            ClientMain.Log("下载/准备失败(第 " + (retry + 1) + " 次): " + ex.GetType().Name + ": " + ex.Message);
+            if (retry < 3)
+            {
+                Thread.Sleep(retry == 0 ? 1500 : 2500);
+                DownloadAndPlay(trackId, path, retry + 1, retry >= 1 ? "" : serverUrl);   // 服务端直链失败后改用客户端自解析
+                return;
+            }
+            // ★ 只有「失败的就是当前曲，而且当前没有在播」时才删文件 + 上报 FINISHED；
+            //   否则旧任务的失败会把正在播的歌打断（实测现象）
+            long cur; bool playingNow;
+            lock (Sync) { cur = _trackId; playingNow = _playing; _downloading = false; }
+            if (cur != trackId || playingNow)
+            {
+                ClientMain.Log("忽略过期失败（失败 id=" + trackId + " 当前 id=" + cur + " 在播=" + playingNow + "）: " + ex.Message);
+                return;
+            }
             ClientMain.Notify("播放失败: " + ex.Message);
             try { if (File.Exists(path)) { File.Delete(path); } } catch { }
-            long id; lock (Sync) { id = _trackId; }
-            ClientMain.SendUp(ClientMain.UpFinished, delegate(BinaryWriter w) { w.Write(id); });   // 让服务端跳到下一首
+            ClientMain.Log("放弃并上报 FINISHED id=" + trackId);
+            ClientMain.SendUp(ClientMain.UpFinished, delegate(BinaryWriter w) { w.Write(trackId); });
         }
     }
 
     private static string FetchUrl(long trackId)
     {
-        using (var wc = new WebClient())
+        string json = HttpGetString(Api + "?types=url&source=netease&id=" + trackId + "&br=320", 15000);
+        return JsonString(json, "url");
+    }
+
+    /// <summary>带超时的 GET（WebClient 没有超时，出问题会一直挂住）。</summary>
+    private static string HttpGetString(string url, int timeoutMs)
+    {
+        var req = (HttpWebRequest)WebRequest.Create(url);
+        req.Method = "GET";
+        req.Timeout = timeoutMs;
+        req.ReadWriteTimeout = timeoutMs;
+        req.UserAgent = "Mozilla/5.0";
+        using (var resp = (HttpWebResponse)req.GetResponse())
+        using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
         {
-            wc.Headers.Add("User-Agent", "Mozilla/5.0");
-            string json = wc.DownloadString(Api + "?types=url&source=netease&id=" + trackId + "&br=320");
-            return JsonString(json, "url");
+            return sr.ReadToEnd();
         }
     }
 
@@ -259,18 +330,38 @@ internal static class Music
         var sb = new StringBuilder();
         for (int p = i + 1; p < json.Length; p++)
         {
-            char c = json[p];
-            if (c == '\\' && p + 1 < json.Length) { sb.Append(json[++p]); continue; }
-            if (c == '"') { break; }
-            sb.Append(c);
+            char ch = json[p];
+            if (ch == '\\' && p + 1 < json.Length) { sb.Append(json[++p]); continue; }
+            if (ch == '"') { break; }
+            sb.Append(ch);
         }
         return sb.ToString();
+    }
+
+    private static long DownloadToFile(string url, string path)
+    {
+        var req = (HttpWebRequest)WebRequest.Create(url);
+        req.Method = "GET";
+        req.Timeout = 20000;
+        req.ReadWriteTimeout = 30000;
+        req.UserAgent = "Mozilla/5.0";
+        using (var resp = (HttpWebResponse)req.GetResponse())
+        using (Stream rs = resp.GetResponseStream())
+        using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+        {
+            byte[] buf = new byte[65536];
+            long total = 0;
+            int n;
+            while ((n = rs.Read(buf, 0, buf.Length)) > 0) { fs.Write(buf, 0, n); total += n; }
+            return total;
+        }
     }
 
     private static void StartPlayback(string path)
     {
         lock (Sync)
         {
+            _downloading = false;
             _file = path;
             _pendingPlay = true;
             _playing = false;
@@ -285,8 +376,13 @@ internal static class Music
 
     internal static void StopAll()
     {
-        StopInternal(true);
-        lock (Sync) { _trackId = -1; _file = null; _name = ""; _artist = ""; }
+        bool had;
+        lock (Sync)
+        {
+            had = _playing || _pendingPlay || _file != null || _pendingStop;
+            _trackId = -1; _file = null; _name = ""; _artist = ""; _url = "";
+        }
+        if (had) { StopInternal(true); }   // ★ 幂等：菜单里每帧调用也不会刷屏 MCI stop/close
     }
 
     private static void StopInternal(bool mci)
@@ -296,6 +392,7 @@ internal static class Music
             _playing = false;
             _wasPlaying = false;
             _pendingPlay = false;
+            _downloading = false;
             _file = null;
             _offsetMs = 0;
             if (mci) { _pendingStop = true; }
@@ -337,11 +434,12 @@ internal static class Music
             try
             {
                 Send("close rymusic");
-                Send("open \"" + file + "\" type mpegvideo alias rymusic");
+                string e1 = Send("open \"" + file + "\" type mpegvideo alias rymusic");
                 int startAt = offset > 0 ? offset + (int)(NowMs - startedAt) : 0;
-                Send(startAt > 0 ? ("play rymusic from " + startAt) : "play rymusic");
-                lock (Sync) { _playing = true; _wasPlaying = false; }
-                playing = true;
+                string e2 = Send(startAt > 0 ? ("play rymusic from " + startAt) : "play rymusic");
+                ClientMain.Log("MCI 起播: open=" + (e1.Length == 0 ? "OK" : e1) + " | play=" + (e2.Length == 0 ? "OK" : e2) + " 起始=" + startAt + "ms");
+                lock (Sync) { _playing = e2.Length == 0; _wasPlaying = false; }
+                playing = _playing;
             }
             catch (Exception ex)
             {
@@ -365,6 +463,7 @@ internal static class Music
         catch { }
 
         string mode = Query("status rymusic mode");
+        if (_lastModeLogged != mode) { _lastModeLogged = mode; ClientMain.Log("MCI mode = " + mode); }
         if (mode == "playing")
         {
             lock (Sync) { _wasPlaying = true; }
@@ -373,6 +472,7 @@ internal static class Music
         {
             string nm = _name, ar = _artist;
             StopInternal(true);
+            ClientMain.Log("播放结束，上报 FINISHED id=" + trackId);
             ClientMain.SendUp(ClientMain.UpFinished, delegate(BinaryWriter w) { w.Write(trackId); });
             ClientMain.Notify("播放结束: " + nm + " - " + ar);
             return;
@@ -385,11 +485,29 @@ internal static class Music
             long pos = 0;
             long.TryParse(Query("status rymusic position"), out pos);
             if (pos < 0) { pos = 0; }
+            ClientMain.Log("上报进度 id=" + trackId + " pos=" + pos + "ms");
             ClientMain.SendUp(ClientMain.UpPosition, delegate(BinaryWriter w) { w.Write(trackId); w.Write((int)pos); });
         }
     }
 
-    private static void Send(string cmd) { try { mciSendString(cmd, null, 0, IntPtr.Zero); } catch { } }
+    [DllImport("winmm.dll", CharSet = CharSet.Auto)]
+    private static extern bool mciGetErrorString(int err, StringBuilder buffer, int bufferSize);
+
+    /// <summary>执行 MCI 命令并返回错误描述（空 = 成功），同时写日志。</summary>
+    private static string Send(string cmd)
+    {
+        try
+        {
+            int e = mciSendString(cmd, null, 0, IntPtr.Zero);
+            if (e == 0) { return ""; }
+            var sb = new StringBuilder(256);
+            try { mciGetErrorString(e, sb, sb.Capacity); } catch { }
+            string msg = "MCI[" + cmd + "] 失败 " + e + ": " + sb;
+            ClientMain.Log(msg);
+            return msg;
+        }
+        catch (Exception ex) { ClientMain.Log("MCI 异常[" + cmd + "]: " + ex.Message); return ex.Message; }
+    }
 
     private static string Query(string cmd)
     {
