@@ -133,13 +133,15 @@ public class ClientMain
     {
         try
         {
-            if (!Main.gameMenu) { _menuSinceMs = 0; return; }
+            Music.FlushStop();   // ★ 主菜单里没有 PlayerUpdate，待办的停止必须在这里落地
+            bool onServer = Main.netMode == 1 || Main.netMode == 2;   // 1=连服 2=开服
+            bool menu = Main.gameMenu;
+            if (onServer && !menu) { _menuSinceMs = 0; return; }      // 在服里正常玩 → 不动
             long now = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
-            if (_menuSinceMs == 0) { _menuSinceMs = now; return; }
-            // ★ 刚进服/切世界时 gameMenu 会短暂为真：必须等它连续 3 秒才认定"真的回到主菜单"，
-            //   否则会把刚收到的 PLAY 立刻掐掉（实测"刚进服最容易没声音"就是这个）
-            if (now - _menuSinceMs < 3000) { return; }
-            if (Authed || Music.IsPlaying) { Authed = false; Music.StopAll(); }
+            if (_menuSinceMs == 0) { _menuSinceMs = now; }
+            // 已离开服务器（netMode 回到 0/单人）→ 立即停；在服里只是进服/切世界的瞬态菜单 → 等 3 秒
+            if (onServer && now - _menuSinceMs < 3000) { return; }
+            if (Authed || Music.IsPlaying) { Authed = false; Music.StopAll(); Music.FlushStop(); }
         }
         catch { }
     }
@@ -240,6 +242,15 @@ internal static class Music
     private static long NowMs { get { return DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond; } }
 
     internal static bool IsPlaying { get { lock (Sync) { return _playing; } } }
+
+    /// <summary>执行待办的 MCI 停止。主菜单里没有 PlayerUpdate，StopAll 挂起的停止必须靠这里落地，
+    ///  否则退出服务器后音乐会一直响（实测就是这个）。</summary>
+    internal static void FlushStop()
+    {
+        bool pending;
+        lock (Sync) { pending = _pendingStop; _pendingStop = false; }
+        if (pending) { Send("stop rymusic"); Send("close rymusic"); }
+    }
 
     internal static string CacheDir()
     {
