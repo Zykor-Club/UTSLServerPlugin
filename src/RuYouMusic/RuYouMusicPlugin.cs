@@ -49,7 +49,11 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private const byte UpHello = 1, UpFinished = 3, UpPosition = 4, UpEvent = 5;
     private const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5, DnPrefetch = 6;
 
-    private const string ApiBase = "https://music-api.gdstudio.xyz/api.php";
+    // ★ 取链接口可插拔：把 apiBase 指向任何能出直链的服务即可（自建代理、带浏览器会话的转发、付费接口…）
+    private static string _apiBase = "https://music-api.gdstudio.xyz/api.php";
+    private static string _apiExtra = "";        // 追加到每个请求末尾的原始串（例如自己的 token 参数）
+    private static string _apiHeaders = "";      // 形如 "Cookie=a=b;Referer=https://..."，用 ; 分隔，会加到每个请求上
+    private static int _apiSign;                 // 0=不签名；1=按前端约定追加 &s=crc32(签名对象)
     // ★ 该接口只支持 netease / joox 等少数音源；网易云对 VIP/地区受限的歌会返回空直链，
     //   这时换 joox 用同一关键字再找，通常能拿到可用直链（不同 CDN）。
     private static string[] _sources = { "netease" };   // 实测 joox 当前返回空直链；netease 稳定，受限歌曲走「同名可播放版本」兜底
@@ -134,6 +138,31 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private static string _commandPermission = "ruyoumusic.use";
 
     private static long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    private static readonly uint[] CrcTable = BuildCrcTable();
+    private static uint[] BuildCrcTable()
+    {
+        var t = new uint[256];
+        for (uint n = 0; n < 256; n++)
+        {
+            uint c = n;
+            for (int k = 0; k < 8; k++) { c = (c & 1) != 0 ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); }
+            t[n] = c;
+        }
+        return t;
+    }
+
+    private static uint Crc32(string s)
+    {
+        uint c = 0xFFFFFFFFu;
+        foreach (byte b in Encoding.UTF8.GetBytes(s ?? "")) { c = CrcTable[(c ^ b) & 0xFF] ^ (c >> 8); }
+        return c ^ 0xFFFFFFFFu;
+    }
+
+    /// <summary>按配置给请求追加签名（前端约定：url/lyric/pic 用 urlEncode(id)，search 用关键字）。</summary>
+    private static string Sign(string subject) => _apiSign == 1 ? ("&s=" + Crc32(subject).ToString(CultureInfo.InvariantCulture)) : "";
+
+    private static string Extra() => _apiExtra;
 
     /// <summary>由「音源 + 远端 id」算一个稳定的 64 位正数 id：协议与客户端缓存都用它。</summary>
     private static long StableId(string source, string remoteId)
@@ -493,7 +522,22 @@ public sealed class RuYouMusicPlugin : BasePlugin
     {
         try
         {
-            string body = await Http.GetStringAsync(url).ConfigureAwait(false);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+            if (_apiHeaders.Length > 0)
+            {
+                foreach (string part in _apiHeaders.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int eq = part.IndexOf('=');
+                    if (eq <= 0) { continue; }
+                    req.Headers.TryAddWithoutValidation(part.Substring(0, eq).Trim(), part.Substring(eq + 1).Trim());
+                }
+            }
+            string body;
+            using (HttpResponseMessage resp = await Http.SendAsync(req).ConfigureAwait(false))
+            {
+                body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            }
             return JsonDocument.Parse(body);
         }
         catch (Exception ex)
@@ -506,7 +550,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private static async Task<List<Track>> SearchAsync(string kw, int count, string source = "netease")
     {
         var list = new List<Track>();
-        string url = ApiBase + "?types=search&source=" + Uri.EscapeDataString(source) + "&name=" + Uri.EscapeDataString(kw) + "&count=" + Math.Clamp(count, 1, 50) + "&pages=1";
+        string url = _apiBase + "?types=search&source=" + Uri.EscapeDataString(source) + "&name=" + Uri.EscapeDataString(kw) + "&count=" + Math.Clamp(count, 1, 50) + "&pages=1" + Sign(kw) + Extra();
         using JsonDocument? doc = await GetJsonAsync(url);
         if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Array) { return list; }
         foreach (JsonElement e in doc.RootElement.EnumerateArray())
@@ -564,7 +608,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
         string rid = t.UrlId.Length > 0 ? t.UrlId : t.RemoteId;
         foreach (int br in new[] { 320, 128 })
         {
-            string url = ApiBase + "?types=url&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(rid) + "&br=" + br;
+            string url = _apiBase + "?types=url&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(rid) + "&br=" + br + Sign(Uri.EscapeDataString(rid)) + Extra();
             using JsonDocument? doc = await GetJsonAsync(url);
             if (doc is null) { continue; }
             JsonElement r = doc.RootElement;
@@ -582,7 +626,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
     {
         try
         {
-            string url = ApiBase + "?types=lyric&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(t.RemoteId);
+            string url = _apiBase + "?types=lyric&source=" + Uri.EscapeDataString(t.Source) + "&id=" + Uri.EscapeDataString(t.RemoteId) + Sign(Uri.EscapeDataString(t.RemoteId)) + Extra();
             using JsonDocument? doc = await GetJsonAsync(url);
             if (doc is null) { return; }
             string lrc = Str(doc.RootElement, "lyric");
@@ -859,7 +903,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private static object ConfigApi(RestRequestArgs args)
     {
         bool touched = GetParam(args, "on").Length > 0 || GetParam(args, "off").Length > 0 || GetParam(args, "autoNext").Length > 0
-                       || GetParam(args, "maxQueue").Length > 0 || GetParam(args, "searchCount").Length > 0 || GetParam(args, "probeSeconds").Length > 0;
+                       || GetParam(args, "maxQueue").Length > 0 || GetParam(args, "searchCount").Length > 0 || GetParam(args, "probeSeconds").Length > 0
+                       || GetParam(args, "apiBase").Length > 0 || GetParam(args, "apiSign").Length > 0;
         if (touched)
         {
             if (IsOn(GetParam(args, "on"))) { _enabled = true; }
@@ -868,6 +913,10 @@ public sealed class RuYouMusicPlugin : BasePlugin
             _maxQueue = Math.Clamp(GetInt(args, "maxQueue", _maxQueue), 1, 200);
             _searchCount = Math.Clamp(GetInt(args, "searchCount", _searchCount), 1, 50);
             _probeSeconds = Math.Clamp(GetInt(args, "probeSeconds", _probeSeconds), 3, 600);
+            if (GetParam(args, "apiBase").Length > 0) { _apiBase = GetParam(args, "apiBase"); }
+            try { if (args.Parameters["apiExtra"] is not null) { _apiExtra = GetParam(args, "apiExtra"); } } catch { }
+            try { if (args.Parameters["apiHeaders"] is not null) { _apiHeaders = GetParam(args, "apiHeaders"); } } catch { }
+            if (GetParam(args, "apiSign").Length > 0) { _apiSign = GetInt(args, "apiSign", _apiSign); }
             SaveSettings();
         }
         return new
@@ -880,7 +929,11 @@ public sealed class RuYouMusicPlugin : BasePlugin
             probeSeconds = _probeSeconds,
             volumePercent = _volumePercent,
             configPath = _configPath ?? "",
-            api = ApiBase
+            api = _apiBase,
+            apiSign = _apiSign,
+            apiExtra = _apiExtra,
+            apiHeaders = _apiHeaders.Length > 0 ? "(已设置)" : "",
+            sources = _sources
         };
     }
 
@@ -982,6 +1035,10 @@ public sealed class RuYouMusicPlugin : BasePlugin
             _autoNext = !r.TryGetProperty("autoNext", out JsonElement an) || an.GetBoolean();
             _volumePercent = r.TryGetProperty("volumePercent", out JsonElement vp) ? vp.GetInt32() : _volumePercent;
             _commandPermission = r.TryGetProperty("commandPermission", out JsonElement cp) ? (cp.GetString() ?? _commandPermission) : _commandPermission;
+            _apiBase = r.TryGetProperty("apiBase", out JsonElement ab) ? (ab.GetString() ?? _apiBase) : _apiBase;
+            _apiExtra = r.TryGetProperty("apiExtra", out JsonElement ae) ? (ae.GetString() ?? _apiExtra) : _apiExtra;
+            _apiHeaders = r.TryGetProperty("apiHeaders", out JsonElement ah) ? (ah.GetString() ?? _apiHeaders) : _apiHeaders;
+            _apiSign = r.TryGetProperty("apiSign", out JsonElement asg) && asg.TryGetInt32(out int sv) ? sv : _apiSign;
             if (r.TryGetProperty("sources", out JsonElement sc2) && sc2.ValueKind == JsonValueKind.Array)
             {
                 var arr = new List<string>();
@@ -1006,6 +1063,10 @@ public sealed class RuYouMusicPlugin : BasePlugin
                 ["autoNext"] = _autoNext,
                 ["volumePercent"] = _volumePercent,
                 ["sources"] = _sources,
+            ["apiBase"] = _apiBase,
+            ["apiExtra"] = _apiExtra,
+            ["apiHeaders"] = _apiHeaders,
+            ["apiSign"] = _apiSign,
             ["commandPermission"] = _commandPermission
             };
             File.WriteAllText(_configPath, JsonSerializer.Serialize(o, new JsonSerializerOptions { WriteIndented = true }));
