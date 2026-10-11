@@ -46,7 +46,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
                                                              //    客户端按载荷偏移解析就全错位）
     private const byte Proto = 2;   // v2：PLAY 帧末尾追加直链 URL
     private static readonly byte[] Magic = { 0x52, 0x59, 0x4D, 0x31 };   // "RYM1"
-    private const byte UpHello = 1, UpFinished = 3, UpPosition = 4;
+    private const byte UpHello = 1, UpFinished = 3, UpPosition = 4, UpEvent = 5;
     private const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5, DnPrefetch = 6;
 
     private const string ApiBase = "https://music-api.gdstudio.xyz/api.php";
@@ -65,6 +65,11 @@ public sealed class RuYouMusicPlugin : BasePlugin
         public long LastPosMs;
         public long LastPosAtMs;
         public long TrackId = -1;
+        // ★ 客户端回传的播放过程事件（面板据此显示「谁没出声、为什么」）
+        public byte LastEventKind;
+        public long LastEventMs;
+        public long LastEventTrackId = -1;
+        public string LastEventMsg = "";
     }
 
     private sealed class Track
@@ -212,7 +217,24 @@ public sealed class RuYouMusicPlugin : BasePlugin
             }
 
             if (!Clients.TryGetValue(who, out ClientState? c)) { return; }
+            // ★ 事件上报放在令牌校验之前：它只是状态信息（谁在下载/失败/播放），伪造无意义
+            if (cmd == UpEvent)
+            {
+                int d = 1 + PayloadOffset;                       // raw 内数据起点
+                if (raw.Length < d + 9) { return; }
+                byte kind = raw[d];
+                long tid = BitConverter.ToInt64(raw.Slice(d + 1, 8));
+                string msg = ReadStrAt(raw, d + 9);
+                c.LastEventKind = kind;
+                c.LastEventMs = NowMs;
+                c.LastEventTrackId = tid;
+                c.LastEventMsg = msg;
+                TShock.Log.Info("[RuYouMusic] " + name + " → " + EventName(kind) + " (id=" + tid + ")" + (msg.Length > 0 ? " " + msg : ""));
+                return;
+            }
+
             // ★ 令牌校验：只有真正完成握手的客户端（带正确会话令牌）才能上报，防止其他玩家伪造点歌状态
+            // ★ 令牌校验：控制类上报（放完/进度）必须带正确会话令牌，防止其他玩家伪造
             for (int i = 0; i < 8; i++) { if (raw[7 + i] != c.Token[i]) { return; } }
             c.LastSeenMs = NowMs;
             c.Name = name;
@@ -236,6 +258,34 @@ public sealed class RuYouMusicPlugin : BasePlugin
         }
         catch { }
     }
+
+    /// <summary>读取载荷里的 [u16 长度][UTF-8] 字符串（越界自动截断）。</summary>
+    private static string ReadStrAt(ReadOnlySpan<byte> raw, int offset)
+    {
+        try
+        {
+            if (offset + 2 > raw.Length) { return ""; }
+            int n = BitConverter.ToUInt16(raw.Slice(offset, 2));
+            int room = Math.Max(0, raw.Length - offset - 2);
+            if (n > room) { n = room; }
+            return Encoding.UTF8.GetString(raw.Slice(offset + 2, n));
+        }
+        catch { return ""; }
+    }
+
+    private static string EventName(byte kind) => kind switch
+    {
+        1 => "开始下载",
+        2 => "下载完成/缓存命中",
+        3 => "下载失败",
+        4 => "播放中",
+        5 => "起播失败",
+        6 => "预取完成",
+        7 => "预取失败",
+        _ => "事件" + kind
+    };
+
+    private static bool IsFailure(byte kind) => kind is 3 or 5 or 7;
 
     private static string PlayerName(int who)
     {
@@ -619,6 +669,9 @@ public sealed class RuYouMusicPlugin : BasePlugin
             volumePercent = _volumePercent,
             queueCount = Queue.Count,
             clientCount = Clients.Count,
+            failures = Clients.Where(kv => IsFailure(kv.Value.LastEventKind))
+                              .Select(kv => new { who = kv.Key, name = kv.Value.Name, reason = kv.Value.LastEventMsg.Length > 0 ? kv.Value.LastEventMsg : EventName(kv.Value.LastEventKind), agoMs = Math.Max(0, NowMs - kv.Value.LastEventMs) })
+                              .ToList(),
             lyricCount = Lyrics.Count,
             autoNext = _autoNext
         };
@@ -641,7 +694,12 @@ public sealed class RuYouMusicPlugin : BasePlugin
                 hasPlugin = has,
                 version = has ? st!.Version : 0,
                 lastSeenMs = has ? Math.Max(0, now - st!.LastSeenMs) : -1,
-                positionMs = has ? st!.LastPosMs : -1
+                positionMs = has ? st!.LastPosMs : -1,
+                lastEvent = has ? EventName(st!.LastEventKind) : "",
+                lastEventFailed = has && IsFailure(st!.LastEventKind),
+                lastEventMs = has && st!.LastEventMs > 0 ? Math.Max(0, now - st.LastEventMs) : -1,
+                lastEventTrackId = has ? st!.LastEventTrackId : -1,
+                lastMessage = has ? st!.LastEventMsg : ""
             });
         }
         return new { status = "200", total = list.Count, capable = Clients.Count, clients = list };

@@ -30,7 +30,7 @@ public class ClientMain
     internal const int FrameSize = 260;
     internal const int PayloadHead = 16;
 
-    internal const byte UpHello = 1, UpFinished = 3, UpPosition = 4;
+    internal const byte UpHello = 1, UpFinished = 3, UpPosition = 4, UpEvent = 5;
     internal const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5, DnPrefetch = 6;
 
     internal static readonly byte[] Magic = { 0x52, 0x59, 0x4D, 0x31 };
@@ -163,6 +163,24 @@ public class ClientMain
 
     private static void OnSent(object state) { }
 
+    internal static void WriteStr(BinaryWriter w, string s)
+    {
+        byte[] b = Encoding.UTF8.GetBytes(s ?? "");
+        int n = Math.Min(b.Length, 200);
+        w.Write((ushort)n);
+        w.Write(b, 0, n);
+    }
+
+    /// <summary>把播放过程中的关键状态/失败原因回报服务端（面板直接能看到"谁没出声、为什么"）。</summary>
+    internal static void ReportEvent(byte kind, long trackId, string msg)
+    {
+        try
+        {
+            SendUp(UpEvent, delegate(BinaryWriter w) { w.Write(kind); w.Write(trackId); WriteStr(w, msg ?? ""); });
+        }
+        catch { }
+    }
+
     internal static string ReadStr(BinaryReader r)
     {
         int n = r.ReadUInt16();
@@ -272,10 +290,12 @@ internal static class Music
                 if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取失败（无直链）: " + name); return; }
                 long n = DownloadToFile(use, path);
                 ClientMain.Log("预取完成: " + name + " " + n + " B（切歌时将秒开）");
+                ClientMain.ReportEvent(6, id, "预取完成 " + (n / 1024) + " KB");
             }
             catch (Exception ex)
             {
                 ClientMain.Log("预取失败: " + name + " " + ex.Message);
+                ClientMain.ReportEvent(7, id, "预取失败: " + ex.Message);
                 try { string path = Path.Combine(CacheDir(), id + ".mp3"); if (File.Exists(path)) { File.Delete(path); } } catch { }
             }
             finally { Interlocked.Exchange(ref _prefetching, 0); TryStartPrefetch(); }
@@ -308,11 +328,13 @@ internal static class Music
         if (File.Exists(path) && new FileInfo(path).Length > 1024)
         {
             ClientMain.Log("Play: id=" + trackId + " 命中缓存 " + path);
+            ClientMain.ReportEvent(2, trackId, "缓存命中");
             StartPlayback(path);
             ClientMain.Notify("开始播放: " + _name + " - " + _artist);
             return;
         }
         ClientMain.Log("Play: id=" + trackId + " 缓存未命中，准备下载（服务端直链=" + (_url.Length == 0 ? "无" : "有") + "）");
+        ClientMain.ReportEvent(1, trackId, "开始下载");
         ClientMain.Notify("正在下载: " + _name + " - " + _artist);
         string u = _url;
         lock (Sync) { _downloading = true; }
@@ -346,6 +368,7 @@ internal static class Music
             }
             StartPlayback(path);
             ClientMain.Notify("开始播放: " + _name + " - " + _artist);
+            ClientMain.ReportEvent(2, trackId, "下载完成 " + (size / 1024) + " KB");
             TrimCache();
         }
         catch (Exception ex)
@@ -367,6 +390,7 @@ internal static class Music
                 return;
             }
             ClientMain.Notify("播放失败: " + ex.Message);
+            ClientMain.ReportEvent(3, trackId, "下载失败: " + ex.Message);
             try { if (File.Exists(path)) { File.Delete(path); } } catch { }
             ClientMain.Log("放弃并上报 FINISHED id=" + trackId);
             ClientMain.SendUp(ClientMain.UpFinished, delegate(BinaryWriter w) { w.Write(trackId); });
@@ -516,6 +540,7 @@ internal static class Music
                 int startAt = offset > 0 ? offset + (int)(NowMs - startedAt) : 0;
                 string e2 = Send(startAt > 0 ? ("play rymusic from " + startAt) : "play rymusic");
                 ClientMain.Log("MCI 起播: open=" + (e1.Length == 0 ? "OK" : e1) + " | play=" + (e2.Length == 0 ? "OK" : e2) + " 起始=" + startAt + "ms");
+                ClientMain.ReportEvent(e2.Length == 0 ? (byte)4 : (byte)5, trackId, e2.Length == 0 ? "播放中" : ("起播失败: " + e2));
                 lock (Sync) { _playing = e2.Length == 0; _wasPlaying = false; }
                 playing = _playing;
                 TryStartPrefetch();   // 当前曲起播后再去预取下一首
