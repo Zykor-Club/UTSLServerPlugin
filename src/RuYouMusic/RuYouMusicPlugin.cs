@@ -189,6 +189,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
             }
 
             if (!Clients.TryGetValue(who, out ClientState? c)) { return; }
+            // ★ 令牌校验：只有真正完成握手的客户端（带正确会话令牌）才能上报，防止其他玩家伪造点歌状态
+            for (int i = 0; i < 8; i++) { if (raw[7 + i] != c.Token[i]) { return; } }
             c.LastSeenMs = NowMs;
             c.Name = name;
             if (cmd == UpFinished)
