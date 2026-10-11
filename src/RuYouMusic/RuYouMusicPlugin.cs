@@ -47,7 +47,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
     private const byte Proto = 2;   // v2：PLAY 帧末尾追加直链 URL
     private static readonly byte[] Magic = { 0x52, 0x59, 0x4D, 0x31 };   // "RYM1"
     private const byte UpHello = 1, UpFinished = 3, UpPosition = 4;
-    private const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5;
+    private const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5, DnPrefetch = 6;
 
     private const string ApiBase = "https://music-api.gdstudio.xyz/api.php";
     // ★ 该接口只支持 netease / joox 等少数音源；网易云对 VIP/地区受限的歌会返回空直链，
@@ -206,6 +206,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
                 });
                 TShock.Log.Info("[RuYouMusic] 客户端插件握手: " + name + " (#" + who + ") v" + ver + "，应答 " + Clients.Count + " 个");
                 if (Current is not null) { SendPlayTo(who, st, 0); }   // 中途加入：直接同步当前歌曲与进度
+                Track? nx; lock (Sync) { nx = Queue.Count > 0 ? Queue[0] : null; }
+                if (nx is not null) { SendPrefetchTo(who, st, nx); }
                 return;
             }
 
@@ -285,6 +287,32 @@ public sealed class RuYouMusicPlugin : BasePlugin
         });
     }
 
+    /// <summary>把队列第一首（下一首）预取提示发给所有已握手客户端。</summary>
+    private static void SendPrefetchToAll()
+    {
+        Track? nxt;
+        lock (Sync) { nxt = Queue.Count > 0 ? Queue[0] : null; }
+        if (nxt is null || string.IsNullOrEmpty(nxt.Url)) { return; }
+        foreach (KeyValuePair<int, ClientState> kv in Clients) { SendPrefetchTo(kv.Key, kv.Value, nxt); }
+    }
+
+    private static void SendPrefetchTo(int who, ClientState st, Track t)
+    {
+        if (string.IsNullOrEmpty(t.Url)) { return; }
+        Send(who, IdDown, DnPrefetch, st.Token, w =>
+        {
+            BitConverter.TryWriteBytes(w.AsSpan(FrameDataOffset, 8), t.Id);
+            BitConverter.TryWriteBytes(w.AsSpan(FrameDataOffset + 8, 4), 0);
+            BitConverter.TryWriteBytes(w.AsSpan(FrameDataOffset + 12, 4), (int)Math.Min(int.MaxValue, t.DurationMs));
+            w[FrameDataOffset + 16] = 0;
+            int p = FrameDataOffset + 24;
+            p = WriteStr(w, p, t.Name);
+            p = WriteStr(w, p, t.Artist);
+            WriteStr(w, p, t.Url);
+        });
+        TShock.Log.Info("[RuYouMusic] 预取提示 → #" + who + " " + t.Name + "（客户端后台下载，切歌秒开）");
+    }
+
     private static int WriteStr(byte[] buf, int pos, string s)
     {
         byte[] b = Encoding.UTF8.GetBytes(s ?? "");
@@ -316,6 +344,8 @@ public sealed class RuYouMusicPlugin : BasePlugin
         foreach (KeyValuePair<int, ClientState> kv in Clients) { kv.Value.LastPosMs = 0; kv.Value.LastPosAtMs = 0; }
         BroadcastPlay();
         _ = Task.Run(async () => await FetchLyricsAsync(t));
+        // ★ 预取：把队列下一首提前告诉客户端，让它在后台下载好 → 切歌几乎秒开
+        SendPrefetchToAll();
     }
 
     private static void Next()
@@ -556,6 +586,7 @@ public sealed class RuYouMusicPlugin : BasePlugin
             else { Queue.Add(t); depth = Queue.Count; }
         }
         if (depth == 0) { Play(t); return "开始播放：" + t.Name + " - " + t.Artist; }
+        if (depth == 1) { SendPrefetchToAll(); }   // 刚好成为下一首 → 立刻让客户端预下载
         return "已加入队列第 " + depth + " 位：" + t.Name + " - " + t.Artist;
     }
 

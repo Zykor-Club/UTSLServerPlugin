@@ -31,7 +31,7 @@ public class ClientMain
     internal const int PayloadHead = 16;
 
     internal const byte UpHello = 1, UpFinished = 3, UpPosition = 4;
-    internal const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5;
+    internal const byte DnProbe = 1, DnPlay = 2, DnStop = 3, DnVolume = 4, DnSession = 5, DnPrefetch = 6;
 
     internal static readonly byte[] Magic = { 0x52, 0x59, 0x4D, 0x31 };
     internal static readonly byte[] Token = new byte[8];
@@ -90,6 +90,20 @@ public class ClientMain
                         + " 直链=" + (url.Length == 0 ? "(空)" : url.Substring(0, Math.Min(70, url.Length)) + "..."));
                     Music.SetVolume(vol);
                     Music.Play(trackId, name, artist, offsetMs, url);
+                    break;
+                }
+                case DnPrefetch:
+                {
+                    long pfId = r.ReadInt64();
+                    r.ReadInt32();                       // 偏移（预取不用）
+                    r.ReadInt32();                       // 时长
+                    r.ReadByte();                        // 音量占位
+                    r.ReadBytes(7);
+                    string pfName = ReadStr(r);
+                    string pfArtist = ReadStr(r);
+                    string pfUrl = ReadStr(r);
+                    Log("收到 PREFETCH: id=" + pfId + " " + pfName + " - " + pfArtist + " 直链=" + (pfUrl.Length == 0 ? "(空)" : pfUrl.Substring(0, Math.Min(50, pfUrl.Length)) + "..."));
+                    Music.Prefetch(pfId, pfName, pfArtist, pfUrl);
                     break;
                 }
                 case DnStop:
@@ -202,6 +216,35 @@ internal static class Music
             if (!Directory.Exists(_cacheDir)) { Directory.CreateDirectory(_cacheDir); }
         }
         return _cacheDir;
+    }
+
+    private static int _prefetching;
+
+    /// <summary>预取：只把下一首下载进缓存，不碰播放状态；切歌时命中缓存即可秒开。</summary>
+    internal static void Prefetch(long trackId, string name, string artist, string url)
+    {
+        if (trackId <= 0) { return; }
+        string path = Path.Combine(CacheDir(), trackId + ".mp3");
+        try { if (File.Exists(path) && new FileInfo(path).Length > 1024) { ClientMain.Log("预取跳过（已有缓存）: " + name); return; } } catch { }
+        lock (Sync) { if (_trackId == trackId && (_playing || _downloading)) { return; } }
+        if (Interlocked.Exchange(ref _prefetching, 1) == 1) { return; }   // 一次只预取一首，避免抢带宽
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
+            {
+                string use = url;
+                if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取: 服务端没给直链，自己解析 " + name); use = FetchUrl(trackId); }
+                if (string.IsNullOrEmpty(use)) { ClientMain.Log("预取失败（无直链）: " + name); return; }
+                long n = DownloadToFile(use, path);
+                ClientMain.Log("预取完成: " + name + " " + n + " B（切歌时将秒开）");
+            }
+            catch (Exception ex)
+            {
+                ClientMain.Log("预取失败: " + name + " " + ex.Message);
+                try { if (File.Exists(path)) { File.Delete(path); } } catch { }
+            }
+            finally { Interlocked.Exchange(ref _prefetching, 0); }
+        });
     }
 
     internal static void Play(long trackId, string name, string artist, int offsetMs, string url)
