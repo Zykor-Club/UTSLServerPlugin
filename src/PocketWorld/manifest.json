@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置自动销毁）"
+  },
+  "README.en-US": {
+    "Description": "Serenitea Pot for UnifierTSL: each player gets an isolated private world, created on demand and unloaded when idle"
+  }
+}
