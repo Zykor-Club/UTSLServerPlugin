@@ -37,6 +37,7 @@
 | `闲置销毁_秒` | 600 | 壶里没人多久后销毁；**0 = 不销毁**（长期保留） |
 | `指令名` | pocket | 注册 `/<名>`、`exit`、`status`（别名 `/cg`） |
 | `进入权限` | 空 | 留空 = 所有人 |
+| **`世界目录`** | 空 | 世界文件目录（含壶文件）。留空 = Terraria 默认（Documents\My Games\Terraria\Worlds）。**若该默认目录不可写**（见下"环境坑"），指到部署目录内，如 C:\utsl-deploy\Worlds |
 
 ## 指令
 
@@ -63,6 +64,21 @@ Copy-Item out/Release/PocketWorld.dll <utsl-deploy>\plugins\PocketWorld.dll -For
 Copy-Item out/Release/PocketWorld.dll <utsl-deploy>\plugins\PocketWorld\PocketWorld.dll -Force
 ```
 > ⚠️ 宿主会扫**扁平与一层子目录**，两处都放并保持同版本；输出目录是 `UTSLServerPlugin\out\Release\`。
+
+## 环境坑：世界目录可能不可写（实测踩过）
+
+**症状**：进壶时报 UnauthorizedAccessException: Access to the path ... is denied，且**连一个临时文件都建不了**；
+但同一进程往别的目录（如 logs）写没问题。
+
+**已排查且都不是原因**：目录 ACL（用户=FullControl、无 Deny）、Defender 受控文件夹访问（已关闭）、
+启动方式（手动双击也一样）、文件名特殊字符、文件占用。
+
+**成因**：限制在**进程令牌层面**（沙箱/策略），与目录权限无关。
+
+**解法**：在 settings.json 里设 **世界目录** 指向该进程确实能写的目录（插件启动时覆盖 Main.WorldPath）。
+注意：Terraria 原生的 -worldpath= 参数在 UTSL 下**不生效**（UTSL 自己解析启动参数，不交给原版解析器），只能由插件覆盖。
+
+**迁移提醒**：改世界目录后，要把已有世界（Dev.wld 等）**复制到新目录**，否则会被当成新世界创建。
 
 ## 待办
 

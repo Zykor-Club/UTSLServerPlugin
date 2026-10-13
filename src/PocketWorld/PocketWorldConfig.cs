@@ -17,6 +17,11 @@ public sealed class PocketWorldConfig
     [JsonPropertyName("闲置销毁_秒")]
     public int IdleDestroySeconds { get; set; } = 600;
 
+    /// <summary>世界文件目录；留空则用 UTSL/Terraria 默认（Documents\My Games\Terraria\Worlds）。
+    /// 在某些环境下该默认目录不可写（沙箱/策略限制），可用此项指到部署目录内。</summary>
+    [JsonPropertyName("世界目录")]
+    public string WorldPath { get; set; } = "";
+
     [JsonPropertyName("指令名")]
     public string CommandName { get; set; } = "pocket";
 

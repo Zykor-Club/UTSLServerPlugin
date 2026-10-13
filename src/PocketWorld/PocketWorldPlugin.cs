@@ -65,6 +65,8 @@ public sealed class PocketWorldPlugin : BasePlugin
 
         if (Interlocked.Exchange(ref _inited, 1) == 1) { return Task.CompletedTask; }
 
+        ApplyWorldPathOverride();
+
         Commands.ChatCommands.Add(new Command(_config.EnterPermission, Command, _config.CommandName, "cg"));
         PlayerHooks.PlayerLogout += OnLogout;
 
@@ -75,6 +77,27 @@ public sealed class PocketWorldPlugin : BasePlugin
 
         TShock.Log.Info($"[尘歌壶] 已加载（上限={_config.MaxPots}，闲置销毁={_config.IdleDestroySeconds}s，指令=/{_config.CommandName}）");
         return Task.CompletedTask;
+    }
+
+    /// <summary>把世界文件目录指到配置值（默认目录在某些环境下不可写）。必须在世界加载前调用。</summary>
+    private static void ApplyWorldPathOverride()
+    {
+        if (string.IsNullOrWhiteSpace(_config.WorldPath)) { return; }
+        try
+        {
+            string before = Terraria.Main.WorldPath;
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            var fi = typeof(Terraria.Main).GetField("WorldPath", flags);
+            if (fi is not null) { fi.SetValue(null, _config.WorldPath); }
+            else
+            {
+                var pi = typeof(Terraria.Main).GetProperty("WorldPath", flags);
+                pi?.SetValue(null, _config.WorldPath);
+                TShock.Log.Warning($"[尘歌壶] 世界目录: WorldPath 不是字段(pi={(pi != null)})");
+            }
+            TShock.Log.Info($"[尘歌壶] 世界目录: '{before}' -> '{Terraria.Main.WorldPath}'  field={(fi != null)}");
+        }
+        catch (Exception ex) { TShock.Log.Error("[尘歌壶] 设置世界目录失败: " + ex); }
     }
 
     public override ValueTask DisposeAsync(bool disposing)
@@ -163,9 +186,60 @@ public sealed class PocketWorldPlugin : BasePlugin
             try
             {
                 ServerContext ctx;
+                bool seededNow = false;
                 if (pot.Server is null)
                 {
-                    ctx = new PotServer("Pot_" + ShortKey(key), BuildProvider(BootName(key), 200, 150));
+                    // 用当前世界的文件做种子：尺寸天然一致（TransferPlayerToServer 要求两侧同尺寸），
+                    // 避免任何"改世界尺寸"的路径
+                    try
+                    {
+                        string potFile = Utilities.IO.GetWorldPathFromName(WorldFileName(pot.OwnerName, key), true);
+
+                        // 目录可写性自检：写不进去时给出明确告警（世界文件创建失败时，问题多半在这里）
+                        try
+                        {
+                            string? pdir = Path.GetDirectoryName(potFile);
+                            string probe = Path.Combine(pdir ?? "", "_potprobe.tmp");
+                            File.WriteAllText(probe, "probe");
+                            File.Delete(probe);
+                        }
+                        catch (Exception pe)
+                        {
+                            TShock.Log.Error($"[尘歌壶] 探测: WorldPath='{Terraria.Main.WorldPath}' potFile='{potFile}' exists={File.Exists(potFile)} seed='{from.Main.worldPathName}' seedExists={File.Exists(from.Main.worldPathName)} ★目录不可写: {pe.GetType().Name}: {pe.Message}");
+                        }
+                        if (!File.Exists(potFile))
+                        {
+                            string? dir = Path.GetDirectoryName(potFile);
+                            if (!string.IsNullOrEmpty(dir)) { Directory.CreateDirectory(dir); }
+                            string seed = from.Main.worldPathName;
+                            try
+                            {
+                                File.Copy(seed, potFile, overwrite: true);
+                            }
+                            catch (Exception exCopy)
+                            {
+                                // File.Copy 在部分路径/占用情形下会抛 UnauthorizedAccessException，流式复制可绕过
+                                TShock.Log.Warning("[尘歌壶] File.Copy 失败(" + exCopy.GetType().Name + ")，改用流式复制");
+                                using (FileStream src = File.OpenRead(seed))
+                                using (FileStream dst = File.Create(potFile))
+                                {
+                                    src.CopyTo(dst);
+                                }
+                            }
+                            seededNow = true;
+                            TShock.Log.Info($"[尘歌壶] 已用 {from.Name} 的世界文件做种子 -> {potFile}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TShock.Log.Error("[尘歌壶] 种子世界文件准备失败: " + ex);
+                        Pots.TryRemove(key, out _);
+                        pot.Busy = false;
+                        p.SendErrorMessage("[尘歌壶] 准备失败: " + ex.Message);
+                        return;
+                    }
+
+                    ctx = new PotServer("Pot_" + ShortKey(key), BuildProvider(WorldFileName(pot.OwnerName, key), tileW, tileH));
                     try { ctx.Run([]); }
                     catch (Exception ex)
                     {
@@ -188,12 +262,15 @@ public sealed class PocketWorldPlugin : BasePlugin
                 {
                     try
                     {
-                        if (!string.Equals(target.WorldDataProvider.WorldName, WorldFileName(key), StringComparison.OrdinalIgnoreCase))
+                        // 只有"这次刚刚播种"才清空；加载既有存档时绝不清空，否则会把玩家建的东西抹掉
+                        if (seededNow)
                         {
-                            target.EnsureBlankWorld(WorldFileName(key), tileW, tileH);
-                            target.SwitchWorld(BuildProvider(WorldFileName(key), tileW, tileH), saveCurrent: false, allowOnline: false);
-                            target.BuildSpawnPlatform(20);
+                            target.ClearCurrentWorld();
                         }
+
+                        // 每次进入都确保出生点有落脚平台：世界文件可能来自任何历史状态（例如没有平台）
+                        target.BuildSpawnPlatform(20);
+                        try { target.WorldFile.SaveWorld(resetTime: false, useTemps: false); } catch { }
                         from.Dispatcher.Post(() =>
                         {
                             try
@@ -336,20 +413,37 @@ public sealed class PocketWorldPlugin : BasePlugin
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 闲置清理异常: " + ex.Message); }
     }
 
+    private static int _keyLogged;
+
+    /// <summary>
+    /// 玩家标识：优先账号 UUID（改名不丢壶），其次连接 UUID，最后退回玩家名。
+    /// 首次解析时打一行诊断，便于确认到底拿到了哪一个。
+    /// </summary>
     private static string OwnerKey(TSPlayer p)
     {
-        try
+        string account = "";
+        try { account = p.Account?.UUID ?? ""; } catch { }
+
+        string conn = "";
+        try { conn = p.UUID ?? ""; } catch { }
+
+        string key = !string.IsNullOrEmpty(account) ? "acct:" + account
+                   : !string.IsNullOrEmpty(conn) ? "conn:" + conn
+                   : "name:" + (p.Name ?? ("#" + p.Index));
+
+        if (Interlocked.Exchange(ref _keyLogged, 1) == 0)
         {
-            string uuid = p.UUID ?? "";
-            if (!string.IsNullOrEmpty(uuid) && Guid.TryParse(uuid, out _)) { return uuid; }
+            TShock.Log.Info($"[尘歌壶] 玩家标识诊断: name={p.Name} accountUUID='{account}' connUUID='{conn}' -> key={key}");
         }
-        catch { }
-        return p.Name ?? ("#" + p.Index);
+
+        return key;
     }
 
     private static string ShortKey(string key)
     {
-        string k = key.Replace("-", "");
+        var sb = new System.Text.StringBuilder(key.Length);
+        foreach (char c in key) { if (char.IsLetterOrDigit(c)) { sb.Append(c); } }
+        string k = sb.ToString();
         return k.Length > 12 ? k[..12] : k;
     }
 
@@ -360,7 +454,12 @@ public sealed class PocketWorldPlugin : BasePlugin
         return n + "的尘歌壶";
     }
 
-    private static string WorldFileName(string key) => "尘歌壶_" + ShortKey(key);
+    // 世界文件名 = 尘歌壶_<玩家名>_<UUID前12>：既好看又能唯一定位（改名也不丢壶）
+    private static string WorldFileName(string playerName, string key)
+    {
+        string n = (playerName ?? "?").Trim();
+        return "尘歌壶_" + n + "_" + ShortKey(key);
+    }
 
     private static string BootName(string key) => "PotBoot_" + ShortKey(key);
 
