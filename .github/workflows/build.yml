@@ -81,7 +81,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: Plugin-DLLs
-          path: publish/*.dll
+          # 模块族插件在 publish/<模块>/ 下（例如 VirtualWorldCore/MyPotWorld.dll），
+          # 所以必须用 ** 递归收集，否则模块族 dll 会漏掉
+          path: |
+            publish/**/*.dll
+            publish/Plugins.json
           compression-level: 9
   Publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Zykor-Club/UTSLServerPlugin'
