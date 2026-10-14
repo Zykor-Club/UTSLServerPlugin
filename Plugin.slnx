@@ -16,5 +16,8 @@
   <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />
   <Project Path="src/ItemPool/ItemPool.csproj" />
   <Project Path="src/MidiPlayer/MidiPlayer.csproj" />
+  <Project Path="src/PocketWorld/PocketWorld.csproj" />
+  <Project Path="src/RuYouMusic/RuYouMusic.csproj" />
+  <Project Path="src/VirtualWorldCore/VirtualWorldCore.csproj" />
   <Project Path="src/WorldCommandChannel/WorldCommandChannel.csproj" />
 </Solution>

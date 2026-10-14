@@ -8,4 +8,12 @@
         <Version>0.1.0</Version>
     </PropertyGroup>
 
+    <!-- 编译期引用核心接口；私有=false + 排除 runtime，避免每个玩法各带一份核心 DLL（版本地狱） -->
+    <ItemGroup>
+        <ProjectReference Include="..\VirtualWorldCore\VirtualWorldCore.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
 </Project>
