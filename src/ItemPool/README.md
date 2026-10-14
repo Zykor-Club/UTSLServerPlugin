@@ -6,24 +6,27 @@
 - 服主通过配置文件预设物品池，玩家自选领取物品
 - 支持两种领取模式："按物品"（每件物品限领一次）和"按次数"（每人限领 N 次）
 - 背包满时拒绝领取，不消耗次数
-- 物品列表分页显示（每页 30 件），支持用 `[i:ID]` 标签预览物品
+- 物品列表分页显示（每页 30 件），支持用 [i:ID] 标签预览物品
+- 领取记录写入数据库，服务器重启后仍然保留
 
 ## 指令
 | 语法 | 权限 | 说明 |
 |------|:----:|------|
 | /xz | xz.use | 查看帮助页面 |
 | /xz list | xz.use | 浏览所有物品池（带编号） |
-| /xz list \<编号\> | xz.use | 直接查看指定编号的物品池 |
-| /xz info \<池名或编号\> [页码] | xz.use | 查看池内物品详情 |
-| /xz pick \<池名或编号\> \<编号\> | xz.use | 领取指定物品 |
-| /xz on \<池名或编号\> | xz.admin | 开启指定物品池 |
-| /xz off \<池名或编号\> | xz.admin | 关闭指定物品池 |
+| /xz list <编号> | xz.use | 直接查看指定编号的物品池 |
+| /xz info <池名或编号> [页码] | xz.use | 查看池内物品详情 |
+| /xz pick <池名或编号> <编号> | xz.use | 领取指定物品 |
+| /xz on <池名或编号> | xz.admin | 开启指定物品池 |
+| /xz off <池名或编号> | xz.admin | 关闭指定物品池 |
 | /xz reload | xz.admin | 热重载配置文件 |
-| /xz reset \<玩家名\> [池名或编号] | xz.admin | 重置玩家领取记录 |
+| /xz reset <玩家名> [池名或编号] | xz.admin | 重置玩家领取记录 |
 | /xz resetall [池名或编号] | xz.admin | 重置所有玩家领取记录 |
 
+> 主命令另有别名 `选择`；只输入 `/xz <编号>` 等价于 `/xz list <编号>`。
+
 ## 配置
-配置文件路径：`tshock/ItemPool.json`
+配置文件路径：`config/ItemPool/ItemPool.json`
 
 ```json
 {
@@ -60,7 +63,7 @@
 ## 配置说明
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|:------:|------|
-| 物品池列表 | 数组 | - | 所有物品池的集合 |
+| 物品池列表 | 数组 | 新手礼包 + 建筑材料包 | 所有物品池的集合 |
 | 池名称 | 字符串 | - | 物品池的唯一名称，用于命令引用 |
 | 模式 | 字符串 | 按物品 | 领取模式："按物品" 或 "按次数" |
 | 最大领取次数 | 整数 | 0 | 仅"按次数"模式生效，0 表示不限次数 |
@@ -75,6 +78,13 @@
 - **按物品**：池中每件物品每个玩家限领一次，领完即标记"已领取"，适合新手礼包等场景
 - **按次数**：每人可领取 N 次，同一物品可重复选择，适合建筑材料等需要多次领取的场景
 
+## UTSL 移植说明
+- 入口从 TerrariaPlugin + [ApiVersion] 改为 BasePlugin + [PluginMetadata]
+- 配置目录改用 UTSL 的 IPluginConfigRegistrar.Directory，即 `config/ItemPool/`（上游为 `tshock/ItemPool.json`）
+- 数据库访问从 TShock 的 Query/QueryReader 改为 linq2db（见 Database.cs）
+- JSON 字段名与原版完全一致，老配置文件可直接搬过来
+- 命令执行者：控制台 / 协调器执行时 args.Player 为 null，统一回退到 args.ExecutorActor
+
 ## 插件版本
 ### v2026.7.23.0
 - 首次发布
@@ -82,5 +92,5 @@
 - 支持池开关、热重载、数据重置
 
 ## 反馈
-- 优先发 issue -> https://github.com/Zykor-Club/TShockServerPlugin
+- 优先发 issue -> https://github.com/Zykor-Club/UTSLServerPlugin
 - 次优先：TShock官方群：816771079
