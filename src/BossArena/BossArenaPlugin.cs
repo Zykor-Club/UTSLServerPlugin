@@ -24,6 +24,7 @@ public sealed class BossArenaPlugin : BasePlugin
     private const int HalfWidth = 60;          // 战斗区域半宽（格）；区域 = [cx-60, cx+60]
 
     private static IVirtualWorldCore? _core;
+    private static bool _apiVersionMismatch;
 
     /// <summary>服务发现：与初始化顺序无关（宿主在所有 InitializeAsync 之前调用）。</summary>
     public override void BeforeGlobalInitialize(ImmutableArray<IPluginContainer> plugins)
@@ -32,7 +33,13 @@ public sealed class BossArenaPlugin : BasePlugin
         {
             foreach (IPluginContainer c in plugins)
             {
-                if (c.Plugin is VirtualWorldCorePlugin vwc) { _core = vwc.Api; break; }
+                // ★ 只认【契约接口】，不绑定核心插件的具体类型名
+                if (c.Plugin is IVirtualWorldCoreProvider provider)
+                {
+                    _apiVersionMismatch = provider.ApiVersion != VirtualWorldApi.Version;
+                    _core = _apiVersionMismatch ? null : provider.Api;
+                    break;
+                }
             }
         }
         catch { _core = null; }
@@ -50,8 +57,10 @@ public sealed class BossArenaPlugin : BasePlugin
 
         Commands.ChatCommands.Add(new Command("", Command, "ba"));
         TShock.Log.Info(_core is not null
-            ? "[BossArena] 已加载 v0.1.0（服务发现: 已取得 VirtualWorldCore）"
-            : "[BossArena] 已加载 v0.1.0（★未取得 VirtualWorldCore）");
+            ? $"[BossArena] 已加载 v0.1.0（服务发现: 已取得 VirtualWorldCore，契约 v{VirtualWorldApi.Version}）"
+            : _apiVersionMismatch
+                ? $"[BossArena] 已加载 v0.1.0（★契约版本不匹配，期望 v{VirtualWorldApi.Version}，功能已禁用）"
+                : "[BossArena] 已加载 v0.1.0（★未取得 VirtualWorldCore）");
     }
 
     private static void Command(CommandArgs args)

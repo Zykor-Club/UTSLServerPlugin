@@ -13,7 +13,7 @@ namespace UTSL.VirtualWorld;
 /// </summary>
 [PluginMetadata("VirtualWorldCore", "0.1.0", "星梦",
     "假世界核心：实例注册表 / 生命周期 / 玩家进出状态一致性（供尘歌壶、PvP、Boss 场地等玩法复用）")]
-public sealed class VirtualWorldCorePlugin : BasePlugin
+public sealed class VirtualWorldCorePlugin : BasePlugin, IVirtualWorldCoreProvider
 {
     private static VirtualWorldCorePlugin? instance;
     private readonly VirtualWorldService service = new();
@@ -22,6 +22,9 @@ public sealed class VirtualWorldCorePlugin : BasePlugin
     public static VirtualWorldCorePlugin? Instance => instance;
 
     public IVirtualWorldCore Api => service;
+
+    /// <summary>契约版本，供玩法发现时校验。</summary>
+    public int ApiVersion => VirtualWorldApi.Version;
 
     public VirtualWorldCorePlugin()
     {

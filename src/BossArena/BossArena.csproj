@@ -8,9 +8,9 @@
         <Version>0.1.0</Version>
     </PropertyGroup>
 
-    <!-- 只编译期引用核心接口；不复制核心 DLL（运行时只加载 plugins 里那一份） -->
+    <!-- 只依赖【契约程序集】：核心实现升级不必重编玩法 -->
     <ItemGroup>
-        <ProjectReference Include="..\VirtualWorldCore\VirtualWorldCore.csproj">
+        <ProjectReference Include="..\VirtualWorldCore.Abstractions\VirtualWorldCore.Abstractions.csproj">
             <Private>false</Private>
             <ExcludeAssets>runtime</ExcludeAssets>
         </ProjectReference>

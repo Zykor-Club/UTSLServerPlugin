@@ -32,6 +32,9 @@ public sealed class PocketWorldPlugin : BasePlugin
     /// <summary>VirtualWorldCore 服务（BeforeGlobalInitialize 里取）。</summary>
     private static IVirtualWorldCore? _core;
 
+    /// <summary>契约版本不匹配标记（只用于日志）。</summary>
+    private static bool _apiVersionMismatch;
+
     /// <summary>玩法侧的每壶状态。核心管生命周期/占用/返回路径；这里只放尘歌壶自己的策略数据。</summary>
     private sealed class Pot
     {
@@ -61,9 +64,11 @@ public sealed class PocketWorldPlugin : BasePlugin
         {
             foreach (IPluginContainer c in plugins)
             {
-                if (c.Plugin is VirtualWorldCorePlugin vwc)
+                // ★ 只认【契约接口】，不绑定核心插件的具体类型名
+                if (c.Plugin is IVirtualWorldCoreProvider provider)
                 {
-                    _core = vwc.Api;
+                    _apiVersionMismatch = provider.ApiVersion != VirtualWorldApi.Version;
+                    _core = _apiVersionMismatch ? null : provider.Api;
                     break;
                 }
             }
@@ -96,8 +101,10 @@ public sealed class PocketWorldPlugin : BasePlugin
 
         TShock.Log.Info($"[尘歌壶] 已加载（上限={_config.MaxPots}，闲置销毁={_config.IdleDestroySeconds}s，指令=/{"cg"}）");
         TShock.Log.Info(_core is not null
-            ? "[尘歌壶] 服务发现: 已通过 BeforeGlobalInitialize 取得 VirtualWorldCore"
-            : "[尘歌壶] 服务发现: ★未取得 VirtualWorldCore（核心未加载）");
+            ? $"[尘歌壶] 服务发现: 已取得 VirtualWorldCore（契约 v{VirtualWorldApi.Version}）"
+            : _apiVersionMismatch
+                ? $"[尘歌壶] 服务发现: ★契约版本不匹配（期望 v{VirtualWorldApi.Version}），假世界功能已禁用"
+                : "[尘歌壶] 服务发现: ★未取得 VirtualWorldCore（核心未加载）");
         return Task.CompletedTask;
     }
 
