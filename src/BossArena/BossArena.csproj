@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>BossArena</AssemblyName>
+        <RootNamespace>BossArena</RootNamespace>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <!-- 只编译期引用核心接口；不复制核心 DLL（运行时只加载 plugins 里那一份） -->
+    <ItemGroup>
+        <ProjectReference Include="..\VirtualWorldCore\VirtualWorldCore.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+</Project>

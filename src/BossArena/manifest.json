@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "Boss 场地：公共假世界 + 战斗平台模板 + 区域重置（用于验证 VirtualWorldCore 抽象是否够用）"
+  },
+  "README.en-US": {
+    "Description": "Boss arena: a public fake world with a combat platform template and region reset (validates the VirtualWorldCore abstraction)"
+  }
+}
