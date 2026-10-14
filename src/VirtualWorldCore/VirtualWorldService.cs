@@ -54,6 +54,9 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
     public event Action<IVirtualWorld>? WorldDestroyed;
     public event Action<TSPlayer, IVirtualWorld>? PlayerEntered;
     public event Action<TSPlayer, IVirtualWorld>? PlayerLeft;
+    public event Action<VirtualWorldTransferArgs>? Transferring;
+    public event Action<VirtualWorldTransferArgs>? Transferred;
+    public event Action<VirtualWorldDestroyArgs>? Destroying;
 
     // ==================== 生命周期：创建 / 加载 ====================
 
@@ -258,6 +261,20 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             if (!can) { w.Touch(); return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "玩法策略否决销毁")); }
         }
 
+        if (Destroying is not null)
+        {
+            VirtualWorldDestroyArgs destroyArgs = new() { World = world };
+            foreach (Action<VirtualWorldDestroyArgs> h in Destroying.GetInvocationList())
+            {
+                try { h(destroyArgs); } catch { }
+                if (destroyArgs.Cancel)
+                {
+                    w.Touch();
+                    return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.EventCanceled, destroyArgs.CancelReason ?? "被事件监听方否决"));
+                }
+            }
+        }
+
         var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
@@ -368,6 +385,10 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             if (!can) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "玩法策略否决进入")); }
         }
 
+        VirtualWorldTransferArgs enterArgs = new() { Player = player, World = world, IsEnter = true };
+        VirtualWorldResult enterVeto = RaiseTransferring(Transferring, enterArgs);
+        if (!enterVeto.Success) { return Task.FromResult(enterVeto); }
+
         var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
@@ -399,6 +420,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
                             SafeEntered(pol, player, world);
                             PlayerEntered?.Invoke(player, world);
+                            try { Transferred?.Invoke(new VirtualWorldTransferArgs { Player = player, World = world, IsEnter = true }); } catch { }
                             done.TrySetResult(VirtualWorldResult.Ok);
                         }
                         catch (Exception ex)
@@ -447,6 +469,13 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             return Task.FromResult(VirtualWorldResult.Ok);
         }
 
+        if (w is not null)
+        {
+            VirtualWorldTransferArgs leaveArgs = new() { Player = player, World = w, IsEnter = false };
+            VirtualWorldResult leaveVeto = RaiseTransferring(Transferring, leaveArgs);
+            if (!leaveVeto.Success) { return Task.FromResult(leaveVeto); }
+        }
+
         var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
@@ -475,6 +504,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                     {
                         SafeLeft(w.Request.Policy, player, w);
                         PlayerLeft?.Invoke(player, w);
+                        try { Transferred?.Invoke(new VirtualWorldTransferArgs { Player = player, World = w, IsEnter = false }); } catch { }
                     }
                     done.TrySetResult(VirtualWorldResult.Ok);
                 }
@@ -701,6 +731,21 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             }
             catch { }
         });
+    }
+
+    /// <summary>依次调用可否决的转移事件；任一监听方置 Cancel 就返回失败。</summary>
+    private static VirtualWorldResult RaiseTransferring(Action<VirtualWorldTransferArgs>? handlers, VirtualWorldTransferArgs args)
+    {
+        if (handlers is null) { return VirtualWorldResult.Ok; }
+        foreach (Action<VirtualWorldTransferArgs> h in handlers.GetInvocationList())
+        {
+            try { h(args); } catch { }
+            if (args.Cancel)
+            {
+                return VirtualWorldResult.Fail(VirtualWorldFailure.EventCanceled, args.CancelReason ?? "被事件监听方否决");
+            }
+        }
+        return VirtualWorldResult.Ok;
     }
 
     private static void SafeEntered(IVirtualWorldPolicy? pol, TSPlayer p, IVirtualWorld w)

@@ -14,6 +14,13 @@ public sealed class BossArenaConfig
     [JsonPropertyName("互通_允许的来源")]
     public string[] InteropAllowedSources { get; set; } = [];
 
+    /// <summary>
+    /// 【调试开关】开启后本插件会订阅核心的 Transferring 事件并否决所有进入场地的请求。
+    /// 用途：可复现地验证"可否决事件"这条路径（O3）。默认 false，生产请保持关闭。
+    /// </summary>
+    [JsonPropertyName("调试_否决进入")]
+    public bool DebugVetoEnter { get; set; } = false;
+
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

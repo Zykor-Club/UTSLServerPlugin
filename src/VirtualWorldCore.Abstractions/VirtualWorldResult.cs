@@ -8,6 +8,7 @@ public enum VirtualWorldFailure
     NotRunning,         // 世界还没跑起来 / 调度器不可用
     SameWorld,          // 源与目标相同
     PolicyRejected,     // 玩法策略否决（CanJoin / CanDestroy）
+    EventCanceled,      // 被事件监听方否决（Transferring / Destroying）
     TransferRejected,   // 转移被静默拒绝（生效复核不通过）
     Occupied,           // 世界里仍有 active 玩家
     OnReturnPath,       // 仍挂在某玩家的返回路径上（不可回收）

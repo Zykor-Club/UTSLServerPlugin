@@ -60,12 +60,29 @@ public sealed class BossArenaPlugin : BasePlugin
         try { _configPath = Path.Combine(configRegistrar.Directory, "settings.json"); } catch { _configPath = ""; }
         _config = BossArenaConfig.Load(_configPath);
 
+        // O3 演示/自测：订阅核心的可否决事件（默认不否决，靠配置开关打开）
+        if (_core is not null)
+        {
+            try { _core.Transferring += OnTransferring; } catch { }
+        }
+
         Commands.ChatCommands.Add(new Command("", Command, "ba"));
         TShock.Log.Info(_core is not null
             ? $"[BossArena] 已加载 v0.1.0（服务发现: 已取得 VirtualWorldCore，契约 v{VirtualWorldApi.Version}）"
             : _apiVersionMismatch
                 ? $"[BossArena] 已加载 v0.1.0（★契约版本不匹配，期望 v{VirtualWorldApi.Version}，功能已禁用）"
                 : "[BossArena] 已加载 v0.1.0（★未取得 VirtualWorldCore）");
+    }
+
+    /// <summary>可否决事件回调：只在本插件被开启【调试_否决进入】时否决"进入场地"。</summary>
+    private static void OnTransferring(VirtualWorldTransferArgs args)
+    {
+        if (!_config.DebugVetoEnter) { return; }
+        if (args.IsEnter && args.World.Group == "BossArena")
+        {
+            args.Cancel = true;
+            args.CancelReason = "[调试] BossArena 否决进入（调试_否决进入 = true）";
+        }
     }
 
     /// <summary>该实例是不是【本玩法的 Boss 场地】。</summary>

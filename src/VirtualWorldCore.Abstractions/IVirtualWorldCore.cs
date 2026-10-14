@@ -66,4 +66,15 @@ public interface IVirtualWorldCore
     event Action<IVirtualWorld>? WorldDestroyed;
     event Action<TSPlayer, IVirtualWorld>? PlayerEntered;
     event Action<TSPlayer, IVirtualWorld>? PlayerLeft;
+
+    // ===== 可否决事件（O3）：任何插件都能挂，不必成为玩法 =====
+
+    /// <summary>玩家转移【前】触发（进入与离开都走这里）；置 args.Cancel 可否决。</summary>
+    event Action<VirtualWorldTransferArgs>? Transferring;
+
+    /// <summary>玩家转移【后】触发（已记账）；不可否决。</summary>
+    event Action<VirtualWorldTransferArgs>? Transferred;
+
+    /// <summary>销毁实例【前】触发；置 args.Cancel 可否决。</summary>
+    event Action<VirtualWorldDestroyArgs>? Destroying;
 }
