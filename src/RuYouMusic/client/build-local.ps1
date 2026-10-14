@@ -1,8 +1,12 @@
 ﻿# Build the client plugin locally (edit the two paths if yours differ).
 param(
   [string]$GameDir   = "D:\Steam\steamapps\common\Terraria",
-  [string]$LoaderDir = "C:\Users\星梦\Desktop\点歌机逆向\inflated程序集"
+  [string]$LoaderDir = ""
 )
+if ([string]::IsNullOrWhiteSpace($LoaderDir)) {
+  Write-Error "请用 -LoaderDir 指定已解包的游戏 Plugins 目录（其中应有 R.PluginSwitch.dll）"
+  exit 1
+}
 if (-not (Test-Path (Join-Path $LoaderDir "R.PluginSwitch.dll"))) {
   Write-Error "R.PluginSwitch.dll not found in $LoaderDir - inflate it from the game's Plugins\R.PluginSwitch.rym first"
   exit 1

@@ -41,17 +41,17 @@ public sealed class MultiWorldConfig
     [JsonPropertyName("世界链")]
     public List<string> WorldChain { get; set; } = ["West", "Dev", "East"];
 
-    /// <summary>UTSLStitchTool.exe 的路径。</summary>
+    /// <summary>UTSLStitchTool.exe 的路径。★ 必填：请填你自己机器上的绝对路径。</summary>
     [JsonPropertyName("切分工具路径")]
-    public string ToolPath { get; set; } = "C:\\Users\\星梦\\Desktop\\repo-compare\\UTSLStitchTool\\bin\\Release\\net10.0\\UTSLStitchTool.exe";
+    public string ToolPath { get; set; } = "";
 
-    /// <summary>服务器可执行文件路径（用于重启）。</summary>
+    /// <summary>服务器可执行文件路径（用于重启）。★ 必填：请填你自己机器上的绝对路径。</summary>
     [JsonPropertyName("服务器路径")]
-    public string ServerPath { get; set; } = "C:\\Users\\星梦\\Desktop\\utsl-deploy\\UnifierTSL.exe";
+    public string ServerPath { get; set; } = "";
 
-    /// <summary>服务器工作目录。</summary>
+    /// <summary>服务器工作目录。★ 必填：请填你自己机器上的绝对路径。</summary>
     [JsonPropertyName("服务器工作目录")]
-    public string ServerWorkDir { get; set; } = "C:\\Users\\星梦\\Desktop\\utsl-deploy";
+    public string ServerWorkDir { get; set; } = "";
 
     /// <summary>下一次重置用的种子（空 = 随机）。</summary>
     [JsonPropertyName("下次重置种子")]
@@ -382,7 +382,36 @@ public sealed class ChainResetter(string configDir)
         try
         {
             using System.Net.Http.HttpClient hc = new() { Timeout = TimeSpan.FromMinutes(5) };
-            string token = Environment.GetEnvironmentVariable("AUTORESET_REST_TOKEN") ?? "dsh-dev-token";
+            // ★ 2026-10-11 安全修复：原来这里有一段硬编码的兜底令牌字面值，
+            //   而该令牌曾进入公开 git 历史 → 等于把线上凭证的半公开副本写进源码（此处不再复述其值 ✗）。
+            //   现在：只从环境变量取；取不到就【明确报错并放弃本次保存】，绝不静默使用错误令牌。
+            // ★ 2026-10-11 安全修复（第二版）：原来这里硬编码了兜底令牌，泄漏后无法收场。
+            //   现在按以下顺序取令牌，全部是"跟着宿主走"的方式，轮换令牌后自动跟随，源码里没有任何令牌 ✗：
+            //     ① 环境变量 AUTORESET_REST_TOKEN（可选覆盖）
+            //     ② 宿主当前生效的 REST 令牌（TShock.Config.GlobalSettings.ApplicationRestTokens，进程内直接读）
+            //   注意：不能用机器级环境变量作为唯一来源 —— 远端服务端由 WMI 启动，
+            //   而 WmiPrvSE 继承的是它自己启动时的环境块，后设的机器级变量传不进子进程 ✗（2026-10-11 实测踩到）。
+            string token = Environment.GetEnvironmentVariable("AUTORESET_REST_TOKEN") ?? "";
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                try
+                {
+                    foreach (KeyValuePair<string, Rests.SecureRest.TokenData> kv in TShock.Config.GlobalSettings.ApplicationRestTokens)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key)) { token = kv.Key; break; }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TShock.Log.Warning("[AutoResetPlus] 读取宿主 REST 令牌失败: " + ex.Message);
+                }
+            }
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                TShock.Log.Error("[AutoResetPlus] 拿不到 REST 令牌（环境变量未设，且宿主 ApplicationRestTokens 为空）"
+                    + " —— 已取消本次世界保存。");
+                return;
+            }
             string url = $"http://127.0.0.1:7878/world/save?token={token}";
             _ = hc.PostAsync(url, null).ContinueWith(t =>
             {
@@ -415,6 +444,11 @@ public sealed class ChainResetter(string configDir)
         sb.AppendLine("$log = " + Q(Path.Combine(_configDir, "slice-deploy.log")));
         sb.AppendLine("function W($m) { Add-Content -LiteralPath $log -Value (\"$(Get-Date -Format 'HH:mm:ss') $m\") -Encoding UTF8 }");
         sb.AppendLine("W '脚本启动：等待旧服务器进程退出...'");
+        // ★ 这三个路径不再内置任何默认值：缺失/不存在时给出明确报错，
+        //   避免换机器后只看到"找不到文件"这种莫名其妙的失败
+        sb.AppendLine($"if (-not (Test-Path -LiteralPath {Q(cfg.ToolPath)})) {{ W '★ 切分工具路径不存在，请检查 config/AutoResetPlus/MultiWorld.json：'; W {Q(cfg.ToolPath)}; exit 1 }}");
+        sb.AppendLine($"if (-not (Test-Path -LiteralPath {Q(cfg.ServerPath)})) {{ W '★ 服务器路径不存在，请检查 config/AutoResetPlus/MultiWorld.json：'; W {Q(cfg.ServerPath)}; exit 1 }}");
+        sb.AppendLine($"if (-not (Test-Path -LiteralPath {Q(cfg.ServerWorkDir)})) {{ W '★ 服务器工作目录不存在，请检查 config/AutoResetPlus/MultiWorld.json：'; W {Q(cfg.ServerWorkDir)}; exit 1 }}");
         sb.AppendLine("try {");
         sb.AppendLine("  while (Get-Process -Name UnifierTSL -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }");
         sb.AppendLine("  Start-Sleep -Seconds 6");
@@ -768,7 +802,7 @@ public sealed class ChainResetter(string configDir)
         {
             // ★ 用 PowerShell 脚本重启，不用 .cmd：
             //   cmd.exe 按系统 ANSI(GBK) 读脚本，而 .cmd 是 UTF-8 写的，
-            //   含中文的路径（如 C:\Users\星梦\...）会被解析成乱码
+            //   含中文的路径（如 C:\Users\<用户名>\...）会被解析成乱码
             //   （实测弹窗: 找不到文件 'C:Users\鏄燈vi\Desktop\utsl-deploy\UnifierTSL.exe'）。
             //   .ps1 用「UTF-8 带 BOM」保存，PowerShell 能正确处理 Unicode 路径。
             string script = Path.Combine(Path.GetTempPath(), "utsl-restart.ps1");
