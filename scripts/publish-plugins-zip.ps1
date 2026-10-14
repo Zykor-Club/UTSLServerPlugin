@@ -182,6 +182,7 @@ foreach ($proj in $projects) {
     $reqHit  = @($attrHits | Where-Object { Test-AttributeName $_.Name 'RequiresCoreModule' }) | Select-Object -First 1
     $metaHit = @($attrHits | Where-Object { Test-AttributeName $_.Name 'PluginMetadata' }) | Select-Object -First 1
 
+
     $role = 'Library'
     $module = ''
     if ($coreHit) {
