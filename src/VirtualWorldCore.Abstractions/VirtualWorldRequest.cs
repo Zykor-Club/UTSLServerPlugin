@@ -20,6 +20,13 @@ public sealed class VirtualWorldRequest
     /// <summary>玩法标识（约定用插件名，如 "PocketWorld"）。供其它玩法做互通白名单判断。</summary>
     public string Group = "";
 
+    /// <summary>
+    /// 【加速】空白/模板基线名。非空时：同尺寸实例首次创建并把世界存盘后，把它作为该 key 的基线文件；
+    /// 之后同尺寸的新实例**直接复制这个基线**，省掉"复制大地图 + 加载后再全图清空"的开销。
+    /// 空 = 不启用（走原有种子路径）。
+    /// </summary>
+    public string? TemplateKey;
+
     /// <summary>ServerContext 名字；空 = 核心生成 &lt;key 前 12 位&gt;。</summary>
     public string ServerName = "";
 

@@ -99,32 +99,32 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
                 if (!File.Exists(worldFile))
                 {
-                    if (string.IsNullOrEmpty(request.SeedWorldPath))
-                    {
-                        throw new InvalidOperationException($"世界文件不存在且未提供种子: {worldFile}");
-                    }
-                    if (!File.Exists(request.SeedWorldPath))
-                    {
-                        throw new FileNotFoundException($"种子世界文件不存在: {request.SeedWorldPath}");
-                    }
-
                     string? dir = Path.GetDirectoryName(worldFile);
                     if (!string.IsNullOrEmpty(dir)) { Directory.CreateDirectory(dir); }
 
-                    try
+                    // ★ B：优先用【同尺寸的模板基线】（很小的模板文件）→ 不用复制大地图，也不用再全图清空
+                    string? templatePath = TemplatePathFor(request, worldFile);
+                    if (templatePath is not null && File.Exists(templatePath))
                     {
-                        File.Copy(request.SeedWorldPath, worldFile, overwrite: true);
+                        CopyFile(templatePath, worldFile, w, "模板基线");
+                        seededNow = false;
+                        Info($"{Tag(w)} 已用模板基线建立 {worldFile}（{request.TilesX}x{request.TilesY}）");
                     }
-                    catch (Exception exCopy)
+                    else
                     {
-                        // File.Copy 在部分路径/占用情形下会抛 UnauthorizedAccessException，流式复制可绕过
-                        Warn($"{Tag(w)} File.Copy 失败({exCopy.GetType().Name})，改用流式复制");
-                        using FileStream src = File.OpenRead(request.SeedWorldPath);
-                        using FileStream dst = File.Create(worldFile);
-                        src.CopyTo(dst);
+                        if (string.IsNullOrEmpty(request.SeedWorldPath))
+                        {
+                            throw new InvalidOperationException($"世界文件不存在且未提供种子: {worldFile}");
+                        }
+                        if (!File.Exists(request.SeedWorldPath))
+                        {
+                            throw new FileNotFoundException($"种子世界文件不存在: {request.SeedWorldPath}");
+                        }
+
+                        CopyFile(request.SeedWorldPath, worldFile, w, "种子世界文件");
+                        seededNow = true;
+                        Info($"{Tag(w)} 已用种子世界文件建立 {worldFile}");
                     }
-                    seededNow = true;
-                    Info($"{Tag(w)} 已用种子世界文件建立 {worldFile}");
                 }
 
                 ServerContext created = CreateContext(w, request);
@@ -147,7 +147,8 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             ServerContext ctx = w.Context!;
 
             int waited = 0;
-            while (waited < 120000 && !ctx.IsRunning) { Thread.Sleep(500); waited += 500; }
+            // ★ A：原来 Thread.Sleep(500) 轮询 → 每次加载平均白等 ~250ms；改成 25ms
+            while (waited < 120000 && !ctx.IsRunning) { Thread.Sleep(25); waited += 25; }
             if (!ctx.IsRunning)
             {
                 // 启动超时：不但不登记，还要把已创建的世界收掉，避免留下跑着的孤儿世界
@@ -189,11 +190,55 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                 }
             }
 
+            // ★ B：首次创建时，把"玩法初始化完成后的世界"缓存为该尺寸的模板基线，供后续同尺寸实例秒建
+            if (createdNow && !string.IsNullOrEmpty(request.TemplateKey))
+            {
+                try
+                {
+                    string? templatePath = TemplatePathFor(request, Utilities.IO.GetWorldPathFromName(request.WorldFileName, true));
+                    if (templatePath is not null && !File.Exists(templatePath))
+                    {
+                        ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false);
+                        string? tdir = Path.GetDirectoryName(templatePath);
+                        if (!string.IsNullOrEmpty(tdir)) { Directory.CreateDirectory(tdir); }
+                        File.Copy(Utilities.IO.GetWorldPathFromName(request.WorldFileName, true), templatePath, overwrite: true);
+                        Info($"{Tag(w)} 已缓存模板基线: {templatePath}");
+                    }
+                }
+                catch (Exception ex) { Warn($"{Tag(w)} 缓存模板基线失败: {ex.Message}"); }
+            }
+
             Info($"{Tag(w)} 世界已加载: {ctx.Name}（{request.TilesX}x{request.TilesY}，刚播种={seededNow}）");
             WorldLoaded?.Invoke(w);
         }
 
         return w;
+    }
+
+    /// <summary>模板基线文件路径（按 TemplateKey + 尺寸区分）；未启用返回 null。</summary>
+    private static string? TemplatePathFor(VirtualWorldRequest request, string worldFile)
+    {
+        if (string.IsNullOrEmpty(request.TemplateKey)) { return null; }
+        string? baseDir = Path.GetDirectoryName(worldFile);
+        if (string.IsNullOrEmpty(baseDir)) { return null; }
+        string safe = request.TemplateKey;
+        foreach (char c in Path.GetInvalidFileNameChars()) { safe = safe.Replace(c, '_'); }
+        return Path.Combine(baseDir, "_vwc_templates", $"{safe}_{request.TilesX}x{request.TilesY}.wld");
+    }
+
+    private static void CopyFile(string from, string to, VirtualWorldInstance w, string what)
+    {
+        try
+        {
+            File.Copy(from, to, overwrite: true);
+        }
+        catch (Exception exCopy)
+        {
+            Warn($"[{w.Group}] {what} File.Copy 失败({exCopy.GetType().Name})，改用流式复制");
+            using FileStream src = File.OpenRead(from);
+            using FileStream dst = File.Create(to);
+            src.CopyTo(dst);
+        }
     }
 
     private static ServerContext CreateContext(VirtualWorldInstance w, VirtualWorldRequest request)

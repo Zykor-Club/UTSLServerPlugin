@@ -464,6 +464,9 @@ public sealed class MyPotWorldPlugin : BasePlugin
             DisplayName = pot.WorldName,
             OwnerKey = pot.Key,
             Group = "MyPotWorld",
+            // ★ 启用模板基线：同尺寸的第一个壶建好（清空完）后会被缓存，
+            //   之后同尺寸的壶直接复制它 → 不再复制 6.9MB 主世界、也不再全图清空
+            TemplateKey = "pot_blank",
             Policy = new PotPolicy(),
             ServerName = "Pot_" + ShortKey(pot.Key),
             WorldFileName = WorldFileName(pot.OwnerName, pot.Key),
