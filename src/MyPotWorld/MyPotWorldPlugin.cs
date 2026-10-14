@@ -105,6 +105,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             {
                 UnifierApi.EventHub.Game.PreUpdate.Register(OnGamePreUpdate, HandlerPriority.Normal);
                 NetPacketHandler.Register<TileChange>(OnTileEdit, HandlerPriority.Normal);
+                NetPacketHandler.Register<LiquidUpdate>(OnLiquidSet, HandlerPriority.Normal);
                 TShock.Log.Info("[尘歌壶] 家园活动区域：已挂 PreUpdate（每帧）+ TileChange 拦截（不可破坏）");
             }
             catch (Exception ex) { TShock.Log.Error("[尘歌壶] 活动区域钩子注册失败: " + ex.Message); }
@@ -137,6 +138,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             try { _syncTimer?.Dispose(); } catch { }
             try { UnifierApi.EventHub.Game.PreUpdate.UnRegister(OnGamePreUpdate); } catch { }
             try { NetPacketHandler.UnRegister<TileChange>(OnTileEdit); } catch { }
+            try { NetPacketHandler.UnRegister<LiquidUpdate>(OnLiquidSet); } catch { }
             try { _idleTimer?.Dispose(); } catch { }
         }
         return ValueTask.CompletedTask;
@@ -1061,11 +1063,13 @@ public sealed class MyPotWorldPlugin : BasePlugin
             }
             if (pot is null) { return; }
 
-            if (!IsOnAreaBoundary(ctx, AreaSize(pot.Key), args.Packet.Position.X, args.Packet.Position.Y)) { return; }
+            // ★ 不只是边界那一圈：只要【不在活动区域内部】，一律取消（放方块 / 挖物块 都一样）
+            if (IsInsideArea(ctx, AreaSize(pot.Key), args.Packet.Position.X, args.Packet.Position.Y)) { return; }
 
             TSPlayer? tp = TShock.Players.ElementAtOrDefault(idx);
             tp?.SendTileSquareCentered(args.Packet.Position.X, args.Packet.Position.Y, 1);   // 让客户端回滚
             args.HandleMode = PacketHandleMode.Cancel;                                        // ★ 取消：不破、不掉落
+            args.StopPropagation = true;
         }
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 圈墙拦截异常: " + ex.Message); }
     }
@@ -1104,6 +1108,49 @@ public sealed class MyPotWorldPlugin : BasePlugin
             tp?.SendInfoMessage($"[尘歌壶] 你已走出家园活动范围（{size}x{size}），已被送回中心。");
             TShock.Log.Info($"[尘歌壶] 活动区域：{tp?.Name ?? "?"} 越界({px},{py})，已回传中心");
         }
+    }
+
+    /// <summary>该格是否严格位于活动区域【内部】（内部才允许动土；边界与外边一律禁止）。</summary>
+    private static bool IsInsideArea(ServerContext ctx, int size, int x, int y)
+    {
+        (int minX, int maxX, int minY, _, _, int cy) = AreaRect(ctx, size);
+        return x > minX && x < maxX && y > minY && y < cy;
+    }
+
+    /// <summary>按 ServerContext 找到对应的壶（找不到 = 普通世界）。</summary>
+    private static Pot? FindPotByContext(ServerContext ctx)
+    {
+        if (_core is null) { return null; }
+        foreach (Pot p in Pots.Values)
+        {
+            if (p.Destroyed || p.Busy) { continue; }
+            IVirtualWorld? w = _core.Find(p.Key);
+            if (w?.Context is not null && ReferenceEquals(w.Context, ctx)) { return p; }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 拦液体：活动区域【外】一律不能倒（与边界同样的"取消 + 回滚客户端"，不掉落）。
+    /// 液体包 = LiquidUpdate，字段 TileX/TileY（见 TShockAPI Bouncer.cs:2130-2138）。
+    /// </summary>
+    private static void OnLiquidSet(ref ReceivePacketEvent<LiquidUpdate> args)
+    {
+        try
+        {
+            if (_core is null || !_config.AreaEnabled) { return; }
+            ServerContext? ctx = args.LocalReceiver.Server;
+            if (ctx is null) { return; }
+            Pot? pot = FindPotByContext(ctx);
+            if (pot is null) { return; }
+            if (IsInsideArea(ctx, AreaSize(pot.Key), args.Packet.TileX, args.Packet.TileY)) { return; }
+
+            TSPlayer? tp = TShock.Players.ElementAtOrDefault(args.ReceiveFrom.ID);
+            tp?.SendTileSquareCentered(args.Packet.TileX, args.Packet.TileY, 1);
+            args.HandleMode = PacketHandleMode.Cancel;
+            args.StopPropagation = true;
+        }
+        catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 液体拦截异常: " + ex.Message); }
     }
 
     /// <summary>该格是否位于活动区域边界（地板/天花板的整行，或左右竖墙）。</summary>
