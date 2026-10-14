@@ -181,6 +181,13 @@ foreach ($proj in $projects) {
     $coreHit = @($attrHits | Where-Object { Test-AttributeName $_.Name 'CoreModule' }) | Select-Object -First 1
     $reqHit  = @($attrHits | Where-Object { Test-AttributeName $_.Name 'RequiresCoreModule' }) | Select-Object -First 1
     $metaHit = @($attrHits | Where-Object { Test-AttributeName $_.Name 'PluginMetadata' }) | Select-Object -First 1
+    # 版本优先取 [PluginMetadata("Name","Version",...)]：csproj 的 <Version> 常常没跟着更新
+    # （实测 MyPotWorld：csproj 是 0.1.0，而 PluginMetadata 是 0.5.0）
+    # 元数据参数形如 ("名字", "版本", "作者", "描述")，按引号切分后第 4 段就是版本（不写正则，避免转义踩坑）
+    if ($metaHit -and $metaHit.Args) {
+        $parts = $metaHit.Args -split '"'
+        if ($parts.Count -ge 4 -and -not [string]::IsNullOrWhiteSpace($parts[3])) { $version = $parts[3].Trim() }
+    }
 
 
     $role = 'Library'
