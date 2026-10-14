@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>RuYouMusic</AssemblyName>
+        <RootNamespace>RuYouMusic</RootNamespace>
+        <Version>1.0.0</Version>
+    </PropertyGroup>
+
+    <!-- client/ 是配套的客户端插件（单独工程，目标 .NET Framework 4.8），不要混进服务端插件 -->
+    <ItemGroup>
+        <Compile Remove="client\**" />
+        <None Remove="client\**" />
+    </ItemGroup>
+
+</Project>

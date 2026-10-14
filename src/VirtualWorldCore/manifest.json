@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "VirtualWorldCore：假世界核心（实例注册表 / 生命周期 / 玩家进出状态一致性），供尘歌壶、PvP、Boss 场地等玩法复用"
+  },
+  "README.en-US": {
+    "Description": "VirtualWorldCore: shared fake-world infrastructure (instance registry / lifecycle / player enter-leave state consistency) for gameplay plugins"
+  }
+}

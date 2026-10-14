@@ -7,6 +7,7 @@
     <File Path="template.targets" />
   </Folder>
   <Project Path="src/AutoResetPlus/AutoResetPlus.csproj" />
+  <Project Path="src/BossArena/BossArena.csproj" />
   <Project Path="src/BetterBack/BetterBack.csproj" />
   <Project Path="src/BossCommandExecutor/BossCommandExecutor.csproj" />
   <Project Path="src/CustomDeathMessages/CustomDeathMessages.csproj" />
@@ -16,5 +17,9 @@
   <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />
   <Project Path="src/ItemPool/ItemPool.csproj" />
   <Project Path="src/MidiPlayer/MidiPlayer.csproj" />
+  <Project Path="src/MyPotWorld/MyPotWorld.csproj" />
+  <Project Path="src/RuYouMusic/RuYouMusic.csproj" />
+  <Project Path="src/VirtualWorldCore.Abstractions/VirtualWorldCore.Abstractions.csproj" />
+  <Project Path="src/VirtualWorldCore/VirtualWorldCore.csproj" />
   <Project Path="src/WorldCommandChannel/WorldCommandChannel.csproj" />
 </Solution>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 离线自检：把客户端插件源码 + 桩一起编译（不需要游戏目录、不需要 NuGet），用于验证语法与类型 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>RuYouMusicClientSelfCheck</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>disable</Nullable>
+    <NoWarn>SYSLIB0014;CS0169;CS0649;CS0067</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Stubs.cs" />
+    <Compile Include="..\RuYouMusicClientPlugin.cs" />
+  </ItemGroup>
+</Project>

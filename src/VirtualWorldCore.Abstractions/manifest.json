@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "VirtualWorldCore 契约程序集：接口 / DTO / Result / 事件，供玩法编译期引用，运行时部署在 plugins/VirtualWorldCore/lib/"
+  },
+  "README.en-US": {
+    "Description": "VirtualWorldCore contract assembly (interfaces / DTOs / Result / events); referenced at compile time and deployed under plugins/VirtualWorldCore/lib/"
+  }
+}

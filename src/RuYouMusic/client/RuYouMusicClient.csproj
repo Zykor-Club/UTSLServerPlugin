@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    RuYouMusicClient —— 客户端插件（放进游戏根目录的 Plugins\ 里，由 ReLogic.dll + R.PluginSwitch 加载）
+
+    构建（需要指向游戏目录，里面有 Terraria.exe / ReLogic.dll / XNA）：
+      dotnet build -c Release -p:GameDir="D:\SteamLibrary\steamapps\common\Terraria"
+    产物 RuYouMusicClient.dll 之后用 pack-rym.ps1 压成 .rym（可选，直接放 .dll 也能被加载）
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>RuYouMusicClient</AssemblyName>
+    <RootNamespace>RuYouMusicClient</RootNamespace>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Terraria</GameDir>
+    <LoaderDir Condition="'$(LoaderDir)' == ''">$(GameDir)\Plugins</LoaderDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="RuYouMusicClientPlugin.cs" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Terraria">
+      <HintPath>$(GameDir)\Terraria.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ReLogic">
+      <HintPath>$(GameDir)\ReLogic.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework" Condition="Exists('$(GameDir)\Microsoft.Xna.Framework.dll')">
+      <HintPath>$(GameDir)\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="R.PluginSwitch">
+      <HintPath>$(LoaderDir)\R.PluginSwitch.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 真实 XNA 在 GAC 里（游戏是 x86，优先 GAC_32） -->
+  <PropertyGroup>
+    <XnaPkt>v4.0_4.0.0.0__842cf8be1de50553</XnaPkt>
+    <XnaRoot Condition="'$(XnaRoot)' == '' And Exists('C:\Windows\Microsoft.NET\assembly\GAC_32\Microsoft.Xna.Framework\$(XnaPkt)\Microsoft.Xna.Framework.dll')">C:\Windows\Microsoft.NET\assembly\GAC_32</XnaRoot>
+    <XnaRoot Condition="'$(XnaRoot)' == ''">C:\Windows\Microsoft.NET\assembly\GAC_MSIL</XnaRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework\$(XnaPkt)\Microsoft.Xna.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework.Game\$(XnaPkt)\Microsoft.Xna.Framework.Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics">
+      <HintPath>$(XnaRoot)\Microsoft.Xna.Framework.Graphics\$(XnaPkt)\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+
+</Project>

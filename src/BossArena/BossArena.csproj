@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>BossArena</AssemblyName>
+        <RootNamespace>BossArena</RootNamespace>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <!-- 只依赖【契约程序集】：核心实现升级不必重编玩法 -->
+    <ItemGroup>
+        <ProjectReference Include="..\VirtualWorldCore.Abstractions\VirtualWorldCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+</Project>
