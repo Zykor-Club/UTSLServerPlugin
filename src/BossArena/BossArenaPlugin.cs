@@ -144,9 +144,9 @@ public sealed class BossArenaPlugin : BasePlugin
                     return;
                 }
 
-                bool ok = await _core.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
-                if (ok) { p.SendSuccessMessage("[BossArena] 已进入 Boss 场地。用 /ba exit 返回，/ba reset 重置。"); }
-                else { p.SendErrorMessage("[BossArena] 进入失败：世界转移被拒绝，请稍后再试。"); }
+                VirtualWorldResult enter = await _core.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
+                if (enter.Success) { p.SendSuccessMessage("[BossArena] 已进入 Boss 场地。用 /ba exit 返回，/ba reset 重置。"); }
+                else { p.SendErrorMessage($"[BossArena] 进入失败：{enter.Message}"); }
             }
             catch (Exception ex)
             {
@@ -210,9 +210,9 @@ public sealed class BossArenaPlugin : BasePlugin
         {
             try
             {
-                bool ok = await _core.LeaveAsync(p, CancellationToken.None).ConfigureAwait(false);
-                if (ok) { p.SendSuccessMessage("[BossArena] 已返回原世界。"); }
-                else { p.SendErrorMessage("[BossArena] 返回失败：世界转移被拒绝，请稍后再试。"); }
+                VirtualWorldResult leave = await _core.LeaveAsync(p, CancellationToken.None).ConfigureAwait(false);
+                if (leave.Success) { p.SendSuccessMessage("[BossArena] 已返回原世界。"); }
+                else { p.SendErrorMessage($"[BossArena] 返回失败：{leave.Message}"); }
             }
             catch (Exception ex)
             {

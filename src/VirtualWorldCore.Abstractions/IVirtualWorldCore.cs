@@ -25,16 +25,16 @@ public interface IVirtualWorldCore
     Task<IVirtualWorld> EnsureAsync(VirtualWorldRequest request, CancellationToken ct);
 
     /// <summary>把玩家送进实例（核心负责：转移 + 全部状态一致性 + 记账 + 诊断）。</summary>
-    Task<bool> EnterAsync(TSPlayer player, IVirtualWorld world, CancellationToken ct);
+    Task<VirtualWorldResult> EnterAsync(TSPlayer player, IVirtualWorld world, CancellationToken ct);
 
-    /// <summary>把玩家送回来源世界（核心负责解绑与清理），返回是否成功。</summary>
-    Task<bool> LeaveAsync(TSPlayer player, CancellationToken ct);
+    /// <summary>把玩家送回来源世界（核心负责解绑与清理）。</summary>
+    Task<VirtualWorldResult> LeaveAsync(TSPlayer player, CancellationToken ct);
 
     /// <summary>
     /// 卸载实例（核心负责：确认无 active 玩家 → 清悬空条目 → Close → RemoveServer）。
-    /// 返回 false 表示【本轮放弃销毁】（世界玩家表仍有 active 玩家，或策略否决）。
+    /// 失败时 <see cref="VirtualWorldResult.Reason"/> 说明【本轮为什么放弃销毁】。
     /// </summary>
-    Task<bool> DestroyAsync(IVirtualWorld world, bool save, CancellationToken ct);
+    Task<VirtualWorldResult> DestroyAsync(IVirtualWorld world, bool save, CancellationToken ct);
 
     // ===== 记账查询与看护（玩法侧需要；对应改造前 PocketWorld 的 Inside / Janitor / SelfHeal / StateCheck）=====
 

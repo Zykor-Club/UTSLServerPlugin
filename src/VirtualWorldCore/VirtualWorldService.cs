@@ -222,14 +222,17 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
     // ==================== 生命周期：销毁 ====================
 
-    public Task<bool> DestroyAsync(IVirtualWorld world, bool save, CancellationToken ct)
+    public Task<VirtualWorldResult> DestroyAsync(IVirtualWorld world, bool save, CancellationToken ct)
     {
-        if (world is not VirtualWorldInstance w) { return Task.FromResult(false); }
+        if (world is not VirtualWorldInstance w)
+        {
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例不存在"));
+        }
         ServerContext? ctx = w.Context;
         if (ctx is null)
         {
             Remove(w.Key);
-            return Task.FromResult(true);
+            return Task.FromResult(VirtualWorldResult.Ok);
         }
 
         // ★ 不变式：任何玩家"要回去的世界"都不能被回收，否则他 exit 时回不去（假世界嵌套场景）
@@ -237,7 +240,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         {
             w.Touch();
             Warn($"{Tag(w)} 销毁被否决：仍在某玩家的返回路径上");
-            return Task.FromResult(false);
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.OnReturnPath, "仍在某玩家的返回路径上"));
         }
 
         // ★ 铁律②：以【世界玩家表】为准；世界里还有 active 玩家 → 绝不销毁（双保险）
@@ -245,17 +248,17 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         {
             w.Touch();
             Warn($"{Tag(w)} 销毁被否决：世界玩家表里仍有 active 玩家");
-            return Task.FromResult(false);
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.Occupied, "世界里仍有 active 玩家"));
         }
         IVirtualWorldPolicy? pol = w.Request.Policy;
         if (pol is not null)
         {
             bool can = true;
             try { can = pol.CanDestroy(world); } catch { can = true; }
-            if (!can) { w.Touch(); return Task.FromResult(false); }
+            if (!can) { w.Touch(); return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "玩法策略否决销毁")); }
         }
 
-        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             ctx.Dispatcher.Post(() =>
@@ -294,19 +297,19 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                     Remove(w.Key);
                     Info($"{Tag(w)} {w.DisplayName} 已成功卸载。");
                     WorldDestroyed?.Invoke(w);
-                    done.TrySetResult(true);
+                    done.TrySetResult(VirtualWorldResult.Ok);
                 }
                 catch (Exception ex)
                 {
                     Error($"{Tag(w)} 卸载失败: {ex}");
-                    done.TrySetResult(false);
+                    done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message));
                 }
             });
         }
         catch (Exception ex)
         {
             Error($"{Tag(w)} 卸载投递失败: {ex.Message}");
-            return Task.FromResult(false);
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotRunning, ex.Message));
         }
         return done.Task;
     }
@@ -343,24 +346,29 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
     // ==================== 玩家进出 ====================
 
-    public Task<bool> EnterAsync(TSPlayer player, IVirtualWorld world, CancellationToken ct)
+    public Task<VirtualWorldResult> EnterAsync(TSPlayer player, IVirtualWorld world, CancellationToken ct)
     {
-        if (player is null || world is not VirtualWorldInstance w) { return Task.FromResult(false); }
+        if (player is null || world is not VirtualWorldInstance w)
+        {
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例不存在"));
+        }
 
         ServerContext? from = UnifiedServerCoordinator.GetClientCurrentlyServer(player.Index);
         ServerContext? target = w.Context;
-        if (from is null || target is null || !target.IsRunning) { return Task.FromResult(false); }
-        if (ReferenceEquals(from, target)) { return Task.FromResult(false); }
+        if (from is null) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "找不到玩家当前所在的世界")); }
+        if (target is null) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例尚未加载")); }
+        if (!target.IsRunning) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotRunning, "目标世界未运行")); }
+        if (ReferenceEquals(from, target)) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.SameWorld, "玩家已在目标世界")); }
 
         IVirtualWorldPolicy? pol = w.Request.Policy;
         if (pol is not null)
         {
             bool can = true;
             try { can = pol.CanJoin(player, world); } catch { can = true; }
-            if (!can) { return Task.FromResult(false); }
+            if (!can) { return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "玩法策略否决进入")); }
         }
 
-        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             // 先在目标世界线程做准备（贴模板/铺平台），再回来源世界线程搬人 —— 与改造前逐字一致（R8 取舍）
@@ -379,7 +387,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                             if (!ReferenceEquals(UnifiedServerCoordinator.GetClientCurrentlyServer(player.Index), target))
                             {
                                 Warn($"{Tag(w)} 进入未生效（转移被拒绝）plr={player.Index} target={target.Name}");
-                                done.TrySetResult(false);
+                                done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.TransferRejected, "世界转移被拒绝（生效复核不通过）"));
                                 return;
                             }
 
@@ -391,33 +399,33 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
                             SafeEntered(pol, player, world);
                             PlayerEntered?.Invoke(player, world);
-                            done.TrySetResult(true);
+                            done.TrySetResult(VirtualWorldResult.Ok);
                         }
                         catch (Exception ex)
                         {
                             Error($"{Tag(w)} 搬人失败: {ex}");
-                            done.TrySetResult(false);
+                            done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message));
                         }
                     });
                 }
                 catch (Exception ex)
                 {
                     Error($"{Tag(w)} 进入准备失败: {ex}");
-                    done.TrySetResult(false);
+                    done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message));
                 }
             });
         }
         catch (Exception ex)
         {
             Error($"{Tag(w)} 进入投递失败: {ex.Message}");
-            return Task.FromResult(false);
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotRunning, ex.Message));
         }
         return done.Task;
     }
 
-    public Task<bool> LeaveAsync(TSPlayer player, CancellationToken ct)
+    public Task<VirtualWorldResult> LeaveAsync(TSPlayer player, CancellationToken ct)
     {
-        if (player is null) { return Task.FromResult(true); }
+        if (player is null) { return Task.FromResult(VirtualWorldResult.Ok); }
         int idx = player.Index;
 
         ServerContext? origin = PeekOrigin(idx);
@@ -428,7 +436,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         if (origin is null)
         {
             ClearOccupancy(idx);
-            return Task.FromResult(true);
+            return Task.FromResult(VirtualWorldResult.Ok);
         }
 
         // 已经在来源世界 → 只清记录（自愈；与改造前一致，不按落点重新登记）
@@ -436,10 +444,10 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         {
             PopOrigin(idx);
             ClearOccupancy(idx);
-            return Task.FromResult(true);
+            return Task.FromResult(VirtualWorldResult.Ok);
         }
 
-        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             here.Dispatcher.Post(() =>
@@ -452,7 +460,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                     if (!ReferenceEquals(UnifiedServerCoordinator.GetClientCurrentlyServer(idx), origin))
                     {
                         Warn($"{Tag(w)} 离开未生效（转移被拒绝）plr={idx} origin={origin.Name}");
-                        done.TrySetResult(false);
+                        done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.TransferRejected, "世界转移被拒绝（生效复核不通过）"));
                         return;
                     }
 
@@ -468,19 +476,19 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                         SafeLeft(w.Request.Policy, player, w);
                         PlayerLeft?.Invoke(player, w);
                     }
-                    done.TrySetResult(true);
+                    done.TrySetResult(VirtualWorldResult.Ok);
                 }
                 catch (Exception ex)
                 {
                     Error($"{Tag(w)} 返回失败: {ex}");
-                    done.TrySetResult(false);
+                    done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message));
                 }
             });
         }
         catch (Exception ex)
         {
             Error($"{Tag(w)} 返回投递失败: {ex.Message}");
-            return Task.FromResult(false);
+            return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotRunning, ex.Message));
         }
         return done.Task;
     }

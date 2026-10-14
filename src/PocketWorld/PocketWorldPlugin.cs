@@ -523,17 +523,17 @@ public sealed class PocketWorldPlugin : BasePlugin
                     return;
                 }
                 IVirtualWorld world = await EnsurePotAsync(potRef, from).ConfigureAwait(false);
-                bool ok = await _core!.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
+                VirtualWorldResult enter = await _core!.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
                 potRef.Busy = false;
                 potRef.Destroyed = false;
                 potRef.LastActiveMs = NowMs;
-                if (ok)
+                if (enter.Success)
                 {
                     p.SendSuccessMessage($"[尘歌壶] 已进入 {ownerNameRef} 的尘歌壶。用 /{"cg"} exit 返回。");
                 }
                 else
                 {
-                    p.SendErrorMessage("[尘歌壶] 进入失败：世界转移被拒绝，请稍后再试。");
+                    p.SendErrorMessage($"[尘歌壶] 进入失败：{enter.Message}");
                 }
             }
             catch (Exception ex)
@@ -625,17 +625,17 @@ public sealed class PocketWorldPlugin : BasePlugin
                     return;
                 }
                 IVirtualWorld world = await EnsurePotAsync(potRef, from).ConfigureAwait(false);
-                bool ok = await _core!.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
+                VirtualWorldResult enter = await _core!.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
                 potRef.Busy = false;
                 potRef.Destroyed = false;
                 potRef.LastActiveMs = NowMs;
-                if (ok)
+                if (enter.Success)
                 {
                     p.SendSuccessMessage($"[尘歌壶] 已进入你的壶中世界（{potRef.WorldName}）。用 /{"cg"} exit 返回。");
                 }
                 else
                 {
-                    p.SendErrorMessage("[尘歌壶] 进入失败：世界转移被拒绝，请稍后再试。");
+                    p.SendErrorMessage($"[尘歌壶] 进入失败：{enter.Message}");
                 }
             }
             catch (Exception ex)
@@ -667,9 +667,9 @@ public sealed class PocketWorldPlugin : BasePlugin
         {
             try
             {
-                bool ok = await _core.LeaveAsync(p, CancellationToken.None).ConfigureAwait(false);
-                if (ok) { p.SendSuccessMessage("[尘歌壶] 已返回原世界。"); }
-                else { p.SendErrorMessage("[尘歌壶] 返回失败：世界转移被拒绝，请稍后再试。"); }
+                VirtualWorldResult leave = await _core.LeaveAsync(p, CancellationToken.None).ConfigureAwait(false);
+                if (leave.Success) { p.SendSuccessMessage("[尘歌壶] 已返回原世界。"); }
+                else { p.SendErrorMessage($"[尘歌壶] 返回失败：{leave.Message}"); }
             }
             catch (Exception ex)
             {
@@ -769,9 +769,9 @@ public sealed class PocketWorldPlugin : BasePlugin
                 {
                     try
                     {
-                        bool ok = await _core.DestroyAsync(world, save: true, CancellationToken.None).ConfigureAwait(false);
+                        VirtualWorldResult destroy = await _core.DestroyAsync(world, save: true, CancellationToken.None).ConfigureAwait(false);
                         pot.Destroying = false;
-                        if (ok) { pot.Destroyed = true; }
+                        if (destroy.Success) { pot.Destroyed = true; }
                         else { pot.LastActiveMs = NowMs; }
                     }
                     catch (Exception ex)
