@@ -176,6 +176,9 @@ public sealed class PocketWorldPlugin : BasePlugin
         "downedTowerSolar", "downedTowerVortex", "downedTowerNebula", "downedTowerStardust",
     };
 
+    /// <summary>该实例是不是【本玩法的壶】。（核心只管占用，不区分归属；归属由玩法自己判）</summary>
+    private static bool IsMyPot(IVirtualWorld? w) => w is not null && Pots.ContainsKey(w.Key);
+
     /// <summary>主世界 = 非壶世界里的第一个在运行的世界。</summary>
     private static ServerContext? MainWorld() =>
         UnifiedServerCoordinator.Servers.FirstOrDefault(x => x.IsRunning && !x.Name.StartsWith("Pot_", StringComparison.Ordinal));
@@ -339,7 +342,7 @@ public sealed class PocketWorldPlugin : BasePlugin
             ServerContext? here = UnifiedServerCoordinator.GetClientCurrentlyServer(p.Index);
             if (here is null) { return; }
 
-            bool speakerInPot = _core.FindByOccupant(p.Index) is not null;
+            bool speakerInPot = IsMyPot(_core.FindByOccupant(p.Index));
             if (speakerInPot && !Prefs.Get(OwnerKey(p)).Contact) { return; }
 
             string line = (speakerInPot ? "[尘歌壶] " : "[主世界] ") + p.Name + ": " + text;
@@ -350,7 +353,7 @@ public sealed class PocketWorldPlugin : BasePlugin
                 ServerContext? tpWorld = UnifiedServerCoordinator.GetClientCurrentlyServer(tp.Index);
                 if (tpWorld is null || ReferenceEquals(tpWorld, here)) { continue; }   // 同世界：原生已收到
 
-                bool tpInPot = _core.FindByOccupant(tp.Index) is not null;
+                bool tpInPot = IsMyPot(_core.FindByOccupant(tp.Index));
                 if (speakerInPot)
                 {
                     if (!tpInPot) { tp.SendMessage(line, 255, 255, 255); }             // 壶 -> 主世界
@@ -544,9 +547,15 @@ public sealed class PocketWorldPlugin : BasePlugin
         if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
 
         _core.SelfHeal(p.Index);        // 只在"进入"路径自愈，避免误伤 /cg exit
-        if (_core.FindByOccupant(p.Index) is not null)
+        IVirtualWorld? occ = _core.FindByOccupant(p.Index);
+        if (IsMyPot(occ))
         {
             p.SendInfoMessage("[尘歌壶] 你已经在自己的壶里了。用 /" + "cg" + " exit 返回。");
+            return;
+        }
+        if (occ is not null)
+        {
+            p.SendInfoMessage($"[尘歌壶] 你当前在「{occ.DisplayName}」里，请先退出那里再进壶。");
             return;
         }
 
@@ -620,9 +629,12 @@ public sealed class PocketWorldPlugin : BasePlugin
         TSPlayer? p = args.Player;
         if (p is null || _core is null) { return; }
 
-        if (_core.FindByOccupant(p.Index) is null)
+        IVirtualWorld? occ = _core.FindByOccupant(p.Index);
+        if (!IsMyPot(occ))
         {
-            p.SendInfoMessage("[尘歌壶] 你当前不在壶里。");
+            p.SendInfoMessage(occ is null
+                ? "[尘歌壶] 你当前不在壶里。"
+                : $"[尘歌壶] 你当前不在壶里（在「{occ.DisplayName}」）。");
             return;
         }
 

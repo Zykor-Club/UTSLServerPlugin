@@ -63,6 +63,9 @@ public sealed class BossArenaPlugin : BasePlugin
                 : "[BossArena] 已加载 v0.1.0（★未取得 VirtualWorldCore）");
     }
 
+    /// <summary>该实例是不是【本玩法的 Boss 场地】。</summary>
+    private static bool IsArena(IVirtualWorld? w) => w is not null && w.Key == ArenaKey;
+
     private static void Command(CommandArgs args)
     {
         string sub = args.Parameters.Count > 0 ? args.Parameters[0].ToLowerInvariant() : "";
@@ -95,8 +98,9 @@ public sealed class BossArenaPlugin : BasePlugin
 
         ServerContext? from = UnifiedServerCoordinator.GetClientCurrentlyServer(p.Index);
         if (from is null) { p.SendErrorMessage("[BossArena] 找不到你当前所在的世界。"); return; }
-        if (from.Name == ArenaServerName) { p.SendInfoMessage("[BossArena] 你已经在场地里了。用 /ba exit 返回。"); return; }
-        if (_core.FindByOccupant(p.Index) is not null) { p.SendInfoMessage("[BossArena] 你已经在别的假世界里了，请先 /ba exit 或 /cg exit。"); return; }
+        IVirtualWorld? occ = _core.FindByOccupant(p.Index);
+        if (IsArena(occ) || from.Name == ArenaServerName) { p.SendInfoMessage("[BossArena] 你已经在场地里了。用 /ba exit 返回。"); return; }
+        if (occ is not null) { p.SendInfoMessage($"[BossArena] 你当前在「{occ.DisplayName}」里，请先退出那里再进 Boss 场地。"); return; }
 
         int tileW = from.Main.maxTilesX, tileH = from.Main.maxTilesY;
         p.SendInfoMessage("[BossArena] 正在准备 Boss 场地…");
@@ -172,7 +176,8 @@ public sealed class BossArenaPlugin : BasePlugin
     {
         TSPlayer? p = args.Player;
         if (p is null || _core is null) { return; }
-        if (_core.FindByOccupant(p.Index) is null) { p.SendInfoMessage("[BossArena] 你不在场地里。"); return; }
+        IVirtualWorld? occ = _core.FindByOccupant(p.Index);
+        if (!IsArena(occ)) { p.SendInfoMessage(occ is null ? "[BossArena] 你不在场地里。" : $"[BossArena] 你不在场地里（在「{occ.DisplayName}」）。"); return; }
 
         p.SendInfoMessage("[BossArena] 正在返回…");
         Task.Run(async () =>
