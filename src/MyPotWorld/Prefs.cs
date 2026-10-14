@@ -11,6 +11,12 @@ public sealed class PlayerPrefs
 
     /// <summary>家园活动区域的等级（每级 +配置增量 半径）。</summary>
     [JsonPropertyName("活动区域等级")] public int AreaLevel { get; set; }
+
+    /// <summary>壶内禁止自然刷怪（默认开；按壶主独立）。</summary>
+    [JsonPropertyName("禁止刷怪")] public bool NoSpawn { get; set; } = true;
+
+    /// <summary>壶内无敌（默认开；离开壶时由插件清除）。</summary>
+    [JsonPropertyName("无敌")] public bool God { get; set; } = true;
 }
 
 public static class Prefs

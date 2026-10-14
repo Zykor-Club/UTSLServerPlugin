@@ -36,6 +36,9 @@ public sealed class MyPotWorldPlugin : BasePlugin
     /// <summary>VirtualWorldCore 服务（BeforeGlobalInitialize 里取）。</summary>
     private static IVirtualWorldCore? _core;
 
+    /// <summary>由本插件在壶里开启过无敌的玩家索引（离开壶后要负责关掉）。</summary>
+    private static readonly ConcurrentDictionary<int, byte> _grantedGod = new();
+
     /// <summary>契约版本不匹配标记（只用于日志）。</summary>
     private static bool _apiVersionMismatch;
 
@@ -51,6 +54,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         public long DestroySinceMs;
         public bool Destroyed;           // 世界已被卸载（meta 保留到没人用，便于访问者等待后重建）
         public string LastSig = "";
+        public int? OrigSpawnRate;                                 // 开启"禁止刷怪"前的原值（关掉时还原）
         public long LastActiveMs;
     }
 
@@ -165,6 +169,13 @@ public sealed class MyPotWorldPlugin : BasePlugin
             case "home":
                 AreaCommand(args);
                 break;
+            case "mob":
+            case "spawn":
+                ToggleNoSpawn(args);
+                break;
+            case "god":
+                ToggleGod(args);
+                break;
             case "visit":
             case "join":
                 Visit(args);
@@ -272,6 +283,28 @@ public sealed class MyPotWorldPlugin : BasePlugin
             try { sb.Append(src.NPC.GetType().GetField(f)?.GetValue(src.NPC) is true ? '1' : '0'); } catch { }
         }
         return sb.ToString();
+    }
+
+    /// <summary>切换「壶内禁止自然刷怪」（按壶主独立；默认开）。</summary>
+    private static void ToggleNoSpawn(CommandArgs args)
+    {
+        TSPlayer? p = args.Player;
+        if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
+        var prefs = Prefs.Get(OwnerKey(p));
+        prefs.NoSpawn = !prefs.NoSpawn;
+        Prefs.Save();
+        p.SendInfoMessage($"[尘歌壶] 壶内禁止自然刷怪：{(prefs.NoSpawn ? "已开启" : "已关闭")}");
+    }
+
+    /// <summary>切换「壶内无敌」（按壶主独立；默认开；离开壶会自动清除）。</summary>
+    private static void ToggleGod(CommandArgs args)
+    {
+        TSPlayer? p = args.Player;
+        if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
+        var prefs = Prefs.Get(OwnerKey(p));
+        prefs.God = !prefs.God;
+        Prefs.Save();
+        p.SendInfoMessage($"[尘歌壶] 壶内无敌：{(prefs.God ? "已开启" : "已关闭")}（离开壶后会自动清除）");
     }
 
     private static void ToggleSync(CommandArgs args)
@@ -914,19 +947,97 @@ public sealed class MyPotWorldPlugin : BasePlugin
     {
         try
         {
-            if (_core is null || !_config.AreaEnabled) { return; }
+            if (_core is null) { return; }
             ServerContext ctx = args.Content.Server;
-            foreach (Pot pot in Pots.Values)
+
+            Pot? pot = null;
+            foreach (Pot p in Pots.Values)
             {
-                if (pot.Destroyed || pot.Busy) { continue; }
-                IVirtualWorld? w = _core.Find(pot.Key);
-                if (w?.Context is null || !ReferenceEquals(w.Context, ctx)) { continue; }
-                if (w.Occupants.Count == 0) { return; }     // 没人就不查
-                EnforceArea(ctx, AreaSize(pot.Key));
+                if (p.Destroyed || p.Busy) { continue; }
+                IVirtualWorld? w = _core.Find(p.Key);
+                if (w?.Context is not null && ReferenceEquals(w.Context, ctx)) { pot = p; break; }
+            }
+
+            if (pot is null)
+            {
+                // 普通世界（主世界等）：把本插件在壶里给过的无敌清掉 —— 即"回到主世界后无敌清除"
+                ClearGrantedGod(ctx);
                 return;
             }
+
+            PlayerPrefs prefs = Prefs.Get(pot.Key);     // ★ 按【壶主】的配置，访客也适用
+            ApplyNoSpawn(ctx, pot, prefs.NoSpawn);
+            ApplyGod(ctx, prefs.God);
+
+            if (_config.AreaEnabled && _core.Find(pot.Key)?.Occupants.Count > 0)
+            {
+                EnforceArea(ctx, AreaSize(pot.Key));
+            }
         }
-        catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 活动区域检查异常: " + ex.Message); }
+        catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 壶内检查异常: " + ex.Message); }
+    }
+
+    /// <summary>壶内禁止自然刷怪：按【世界】设 defaultSpawnRate（TShock 自己也是用这个：NpcManagementCommands.cs:676）。</summary>
+    private static void ApplyNoSpawn(ServerContext ctx, Pot pot, bool noSpawn)
+    {
+        const int Huge = 1000000;
+        try
+        {
+            if (noSpawn)
+            {
+                pot.OrigSpawnRate ??= ctx.NPC.defaultSpawnRate;
+                if (ctx.NPC.defaultSpawnRate != Huge) { ctx.NPC.defaultSpawnRate = Huge; }
+            }
+            else if (pot.OrigSpawnRate is int orig)
+            {
+                if (ctx.NPC.defaultSpawnRate != orig) { ctx.NPC.defaultSpawnRate = orig; }
+                pot.OrigSpawnRate = null;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>壶内无敌：只对"本插件开启过的"负责关闭，不碰玩家本来自己开着的无敌。</summary>
+    private static void ApplyGod(ServerContext ctx, bool want)
+    {
+        for (int i = 0; i < ctx.Main.player.Length; i++)
+        {
+            var pl = ctx.Main.player[i];
+            if (pl is null || !pl.active) { continue; }
+            TSPlayer? tp = TShock.Players.ElementAtOrDefault(pl.whoAmI);
+            if (tp is null) { continue; }
+            bool granted = _grantedGod.ContainsKey(pl.whoAmI);
+            try
+            {
+                if (want && !tp.GodMode)
+                {
+                    tp.GodMode = true;
+                    _grantedGod[pl.whoAmI] = 0;
+                }
+                else if (!want && granted)
+                {
+                    if (tp.GodMode) { tp.GodMode = false; }
+                    _grantedGod.TryRemove(pl.whoAmI, out _);
+                }
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>离开壶（回到普通世界）后清除本插件给过的无敌。</summary>
+    private static void ClearGrantedGod(ServerContext ctx)
+    {
+        if (_grantedGod.IsEmpty) { return; }
+        for (int i = 0; i < ctx.Main.player.Length; i++)
+        {
+            var pl = ctx.Main.player[i];
+            if (pl is null || !pl.active) { continue; }
+            if (!_grantedGod.ContainsKey(pl.whoAmI)) { continue; }
+            TSPlayer? tp = TShock.Players.ElementAtOrDefault(pl.whoAmI);
+            try { if (tp is not null && tp.GodMode) { tp.GodMode = false; } } catch { }
+            _grantedGod.TryRemove(pl.whoAmI, out _);
+            TShock.Log.Info($"[尘歌壶] 已清除 {tp?.Name ?? "?"} 的壶内无敌（已回主世界）");
+        }
     }
 
     /// <summary>
@@ -965,7 +1076,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         VerifyAndRepairWalls(ctx, size);
 
         (int minX, int maxX, int minY, int maxY, int cx, int cy) = AreaRect(ctx, size);
-        int landY = cy - Math.Max(1, _config.AreaReturnOffset);
+        int landY = cy - size / 2;      // ★ 回传到"出生点/区域中心"，与 #3 一致（不再用回传落点偏移）
 
         for (int i = 0; i < ctx.Main.player.Length; i++)
         {
