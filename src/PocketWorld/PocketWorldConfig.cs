@@ -25,6 +25,32 @@ public sealed class PocketWorldConfig
     [JsonPropertyName("互通_允许的来源")]
     public string[] InteropAllowedSources { get; set; } = [];
 
+    // ===== 家园：活动区域（越界传送回；半径可随等级扩大）=====
+
+    /// <summary>是否启用活动区域限制。</summary>
+    [JsonPropertyName("家园_活动区域_启用")]
+    public bool AreaEnabled { get; set; } = true;
+
+    /// <summary>初始活动半径（格，从壶中心向左右各这么多格）。</summary>
+    [JsonPropertyName("家园_活动区域_初始半径")]
+    public int AreaBaseRadius { get; set; } = 40;
+
+    /// <summary>每升一级增加的半径（格）。</summary>
+    [JsonPropertyName("家园_活动区域_每级增量")]
+    public int AreaRadiusPerLevel { get; set; } = 20;
+
+    /// <summary>活动半径上限（格）。</summary>
+    [JsonPropertyName("家园_活动区域_最大半径")]
+    public int AreaMaxRadius { get; set; } = 200;
+
+    /// <summary>越界检查间隔（毫秒）。</summary>
+    [JsonPropertyName("家园_活动区域_检查间隔毫秒")]
+    public int AreaCheckIntervalMs { get; set; } = 1000;
+
+    /// <summary>越界后离中心多少格处落地（默认 2）。</summary>
+    [JsonPropertyName("家园_活动区域_回传落点偏移")]
+    public int AreaReturnOffset { get; set; } = 2;
+
 
 
 

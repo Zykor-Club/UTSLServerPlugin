@@ -8,6 +8,9 @@ public sealed class PlayerPrefs
 {
     [JsonPropertyName("保持联系")] public bool Contact { get; set; }
     [JsonPropertyName("同步状态")] public bool Sync { get; set; }
+
+    /// <summary>家园活动区域的等级（每级 +配置增量 半径）。</summary>
+    [JsonPropertyName("活动区域等级")] public int AreaLevel { get; set; }
 }
 
 public static class Prefs
