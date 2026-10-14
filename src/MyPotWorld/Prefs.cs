@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace PocketWorld;
+namespace MyPotWorld;
 
 /// <summary>玩家的个人开关（保持联系 / 同步状态），按玩家标识持久化到 players.json。</summary>
 public sealed class PlayerPrefs

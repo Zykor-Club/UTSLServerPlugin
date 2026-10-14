@@ -3,8 +3,8 @@
     <Import Project="..\..\template.targets"/>
 
     <PropertyGroup>
-        <AssemblyName>PocketWorld</AssemblyName>
-        <RootNamespace>PocketWorld</RootNamespace>
+        <AssemblyName>MyPotWorld</AssemblyName>
+        <RootNamespace>MyPotWorld</RootNamespace>
         <Version>0.1.0</Version>
     </PropertyGroup>
 

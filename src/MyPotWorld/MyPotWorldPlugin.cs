@@ -12,7 +12,7 @@ using UnifierTSL.Events.Handlers;
 using TrProtocol.NetPackets;
 using TrProtocol.Models;
 
-namespace PocketWorld;
+namespace MyPotWorld;
 
 /// <summary>
 /// 尘歌壶 —— 每个玩家一个隔离的私人世界。
@@ -24,10 +24,10 @@ namespace PocketWorld;
 ///   · 按需创建：玩家第一次 /cg 时建立属于他的壶；
 ///   · 闲置销毁：壶里没人超过「闲置销毁_秒」→ 调核心 DestroyAsync（存档 + Close + RemoveServer）。
 /// </summary>
-[PluginMetadata("PocketWorld", "0.5.0", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
-public sealed class PocketWorldPlugin : BasePlugin
+[PluginMetadata("MyPotWorld", "0.5.0", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
+public sealed class MyPotWorldPlugin : BasePlugin
 {
-    private static PocketWorldConfig _config = new();
+    private static MyPotWorldConfig _config = new();
     private static string _configPath = "";
     private static int _inited;
     private static Timer? _idleTimer;
@@ -86,7 +86,7 @@ public sealed class PocketWorldPlugin : BasePlugin
         CancellationToken cancellationToken = default)
     {
         try { _configPath = Path.Combine(configRegistrar.Directory, "settings.json"); } catch { _configPath = ""; }
-        _config = PocketWorldConfig.Load(_configPath);
+        _config = MyPotWorldConfig.Load(_configPath);
 
         if (Interlocked.Exchange(ref _inited, 1) == 1) { return Task.CompletedTask; }
 
@@ -428,7 +428,7 @@ public sealed class PocketWorldPlugin : BasePlugin
             Key = pot.Key,
             DisplayName = pot.WorldName,
             OwnerKey = pot.Key,
-            Group = "PocketWorld",
+            Group = "MyPotWorld",
             Policy = new PotPolicy(),
             ServerName = "Pot_" + ShortKey(pot.Key),
             WorldFileName = WorldFileName(pot.OwnerName, pot.Key),
@@ -820,11 +820,14 @@ public sealed class PocketWorldPlugin : BasePlugin
         return Math.Max(8, sizes[level]);
     }
 
-    /// <summary>活动区域的世界坐标矩形（以出生平台中心为中心）。</summary>
+    /// <summary>
+    /// 活动区域的世界坐标矩形（水平居中于世界，地面在配置的"地表高度"）。
+    /// ★ 不再用 maxTilesY/2：那在主世界就是洞穴深度（用户实测反馈"出生点在洞穴里"）。
+    /// </summary>
     private static (int minX, int maxX, int minY, int maxY, int cx, int cy) AreaRect(ServerContext ctx, int size)
     {
         int cx = ctx.Main.maxTilesX / 2;
-        int cy = ctx.Main.maxTilesY / 2;
+        int cy = Math.Clamp(_config.HomeFloorY, size + 30, Math.Max(size + 31, ctx.Main.maxTilesY - 20));
         int half = Math.Max(4, size / 2);
         return (cx - half, cx + half, cy - size + 1, cy + 2, cx, cy);
     }
@@ -848,12 +851,17 @@ public sealed class PocketWorldPlugin : BasePlugin
         }
     }
 
-    /// <summary>铺活动区域圈墙（石板 + 反色漆）。**必须在本世界线程上跑。**</summary>
+    /// <summary>铺活动区域圈墙（石板 + 反色漆）并设置出生点。**必须在本世界线程上跑。**</summary>
     private static void BuildAreaWalls(ServerContext ctx, int size)
     {
         (int minX, int maxX, int minY, _, _, int cy) = AreaRect(ctx, size);
         foreach ((int x, int y) in EnumerateAreaWalls(ctx, size)) { SetPlate(ctx, x, y); }
-        TShock.Log.Info($"[尘歌壶] 活动区域圈墙已铺: 边长={size} x=[{minX},{maxX}] y=[{minY},{cy - 1}] 图格={_config.AreaWallTileId} 漆={_config.AreaWallPaintId}");
+
+        // ★ 出生点 = 活动区域的【竖直中部】（用户指定；后续接入建筑模板后会改成"在区域内自适应找 4x4 空地"）
+        ctx.Main.spawnTileX = (minX + maxX) / 2;
+        ctx.Main.spawnTileY = cy - size / 2;
+
+        TShock.Log.Info($"[尘歌壶] 活动区域已铺: 边长={size} x=[{minX},{maxX}] 地面Y={cy} 天花板Y={minY} 出生点=({ctx.Main.spawnTileX},{ctx.Main.spawnTileY}) 图格={_config.AreaWallTileId} 漆={_config.AreaWallPaintId}");
     }
 
     private static void SetPlate(ServerContext ctx, int x, int y)

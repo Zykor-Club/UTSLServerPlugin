@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace PocketWorld;
+namespace MyPotWorld;
 
-/// <summary>尘歌壶配置（config/PocketWorld/settings.json）。</summary>
-public sealed class PocketWorldConfig
+/// <summary>尘歌壶配置（config/MyPotWorld/settings.json）。</summary>
+public sealed class MyPotWorldConfig
 {
     [JsonPropertyName("启用")]
     public bool Enabled { get; set; } = true;
@@ -30,6 +30,13 @@ public sealed class PocketWorldConfig
     /// <summary>是否启用活动区域限制。</summary>
     [JsonPropertyName("家园_活动区域_启用")]
     public bool AreaEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 家园地面的 Y（图格坐标）。空世界没有真地表，这里给定一个"地表高度"：
+    /// 默认 500（≈ 主世界地表，既不高到太空也不低到地下）。会按活动区域大小自动夹紧。
+    /// </summary>
+    [JsonPropertyName("家园_地面Y")]
+    public int HomeFloorY { get; set; } = 500;
 
     /// <summary>
     /// 【服主自定义】每一级的活动区域边长（格）。索引 = 等级（0 起），第 0 项就是初始范围。
@@ -77,20 +84,20 @@ public sealed class PocketWorldConfig
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    public static PocketWorldConfig Load(string path)
+    public static MyPotWorldConfig Load(string path)
     {
-        PocketWorldConfig config = new();
+        MyPotWorldConfig config = new();
         try
         {
             if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
-                config = JsonSerializer.Deserialize<PocketWorldConfig>(File.ReadAllText(path), JsonOptions) ?? new PocketWorldConfig();
+                config = JsonSerializer.Deserialize<MyPotWorldConfig>(File.ReadAllText(path), JsonOptions) ?? new MyPotWorldConfig();
             }
         }
         catch (Exception ex)
         {
             TShockAPI.TShock.Log.Error("[尘歌壶] 配置解析失败，使用默认值: " + ex.Message);
-            config = new PocketWorldConfig();
+            config = new MyPotWorldConfig();
         }
 
         // ★ 活动区域：强制"下一级不得小于上一级"，且每级至少 8 格
