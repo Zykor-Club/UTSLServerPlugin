@@ -31,25 +31,40 @@ public sealed class PocketWorldConfig
     [JsonPropertyName("家园_活动区域_启用")]
     public bool AreaEnabled { get; set; } = true;
 
-    /// <summary>初始活动半径（格，从壶中心向左右各这么多格）。</summary>
-    [JsonPropertyName("家园_活动区域_初始半径")]
-    public int AreaBaseRadius { get; set; } = 40;
+    /// <summary>
+    /// 【服主自定义】每一级的活动区域边长（格）。索引 = 等级（0 起），第 0 项就是初始范围。
+    /// 加载时会强制"非递减"（下一级不得小于上一级）且不小于 8。
+    /// </summary>
+    [JsonPropertyName("家园_活动区域_各级边长")]
+    public int[] AreaSizes { get; set; } = [150, 200, 260, 330, 420];
 
-    /// <summary>每升一级增加的半径（格）。</summary>
-    [JsonPropertyName("家园_活动区域_每级增量")]
-    public int AreaRadiusPerLevel { get; set; } = 20;
-
-    /// <summary>活动半径上限（格）。</summary>
-    [JsonPropertyName("家园_活动区域_最大半径")]
-    public int AreaMaxRadius { get; set; } = 200;
-
-    /// <summary>越界检查间隔（毫秒）。</summary>
+    /// <summary>越界检查间隔（毫秒）。越小越"立即"。</summary>
     [JsonPropertyName("家园_活动区域_检查间隔毫秒")]
-    public int AreaCheckIntervalMs { get; set; } = 1000;
+    public int AreaCheckIntervalMs { get; set; } = 300;
 
-    /// <summary>越界后离中心多少格处落地（默认 2）。</summary>
+    /// <summary>越界后落在离地面多少格处（默认 2）。</summary>
     [JsonPropertyName("家园_活动区域_回传落点偏移")]
     public int AreaReturnOffset { get; set; } = 2;
+
+    /// <summary>圈墙图格 ID（默认 273 = 石板）。</summary>
+    [JsonPropertyName("家园_活动区域_圈墙图格ID")]
+    public int AreaWallTileId { get; set; } = 273;
+
+    /// <summary>圈墙油漆 ID（默认 30 = 反色漆；-1 = 不刷漆）。</summary>
+    [JsonPropertyName("家园_活动区域_圈墙油漆ID")]
+    public int AreaWallPaintId { get; set; } = 30;
+
+    /// <summary>升级消耗的物品 ID（0 = 不消耗）。</summary>
+    [JsonPropertyName("家园_活动区域_升级消耗物品ID")]
+    public int AreaUpgradeItemId { get; set; } = 0;
+
+    /// <summary>升级基础消耗数量（等级 0 → 1）。</summary>
+    [JsonPropertyName("家园_活动区域_升级消耗基础数量")]
+    public int AreaUpgradeBaseCount { get; set; } = 0;
+
+    /// <summary>每升一级额外增加的消耗数量。</summary>
+    [JsonPropertyName("家园_活动区域_升级消耗每级递增")]
+    public int AreaUpgradeStepCount { get; set; } = 0;
 
 
 
@@ -77,6 +92,34 @@ public sealed class PocketWorldConfig
             TShockAPI.TShock.Log.Error("[尘歌壶] 配置解析失败，使用默认值: " + ex.Message);
             config = new PocketWorldConfig();
         }
+
+        // ★ 活动区域：强制"下一级不得小于上一级"，且每级至少 8 格
+        try
+        {
+            int[] src = config.AreaSizes ?? [];
+            if (src.Length == 0)
+            {
+                config.AreaSizes = [150];
+            }
+            else
+            {
+                int[] fixedSizes = new int[src.Length];
+                int prev = 0;
+                for (int i = 0; i < src.Length; i++)
+                {
+                    int v = Math.Max(8, src[i]);
+                    if (v < prev)
+                    {
+                        TShockAPI.TShock.Log.Warning($"[尘歌壶] 活动区域第 {i} 级边长 {v} 小于上一级 {prev}，已自动抬到 {prev}");
+                        v = prev;
+                    }
+                    fixedSizes[i] = v;
+                    prev = v;
+                }
+                config.AreaSizes = fixedSizes;
+            }
+        }
+        catch { }
 
         try
         {

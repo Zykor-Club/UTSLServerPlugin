@@ -433,9 +433,9 @@ public sealed class PocketWorldPlugin : BasePlugin
             // ★ 每次进入都确保出生点有落脚平台（世界文件可能来自任何历史状态）
             OnBeforeEnter = (ctx, _) =>
             {
-                int halfW = AreaHalfWidth(pot.Key);
-                ctx.BuildSpawnPlatform(halfW);      // 地面 + 出生点（内部走完整簿记）
-                BuildAreaWalls(ctx, halfW);         // 家园活动区域的边界墙
+                int size = AreaSize(pot.Key);
+                ctx.BuildSpawnPlatform(Math.Max(4, size / 2));   // 地面 + 出生点（内部走完整簿记）
+                BuildAreaWalls(ctx, size);                        // 圈墙：石板 + 反色漆
                 try { ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false); } catch { }
             },
         }, CancellationToken.None);
@@ -801,40 +801,87 @@ public sealed class PocketWorldPlugin : BasePlugin
 
     // ===== 家园：活动区域（参考 HouseRegion 的"区域"思想，用我们自己的实现）=====
 
-    /// <summary>活动区域半宽（格）：中心向左右各这么多格。等级来自该壶主的 Prefs。</summary>
-    private static int AreaHalfWidth(string ownerKey)
+    /// <summary>该壶当前等级对应的活动区域【边长】（格）。服主用配置数组自定义每级多大。</summary>
+    private static int AreaSize(string ownerKey)
     {
-        int level = Math.Max(0, Prefs.Get(ownerKey).AreaLevel);
-        int r = _config.AreaBaseRadius + level * _config.AreaRadiusPerLevel;
-        return Math.Clamp(r, 8, Math.Max(8, _config.AreaMaxRadius));
+        int[] sizes = _config.AreaSizes ?? [];
+        if (sizes.Length == 0) { return 150; }
+        int level = Math.Clamp(Prefs.Get(ownerKey).AreaLevel, 0, sizes.Length - 1);
+        return Math.Max(8, sizes[level]);
     }
 
     /// <summary>活动区域的世界坐标矩形（以出生平台中心为中心）。</summary>
-    private static (int minX, int maxX, int minY, int maxY, int cx, int cy) AreaRect(ServerContext ctx, int halfW)
+    private static (int minX, int maxX, int minY, int maxY, int cx, int cy) AreaRect(ServerContext ctx, int size)
     {
         int cx = ctx.Main.maxTilesX / 2;
         int cy = ctx.Main.maxTilesY / 2;
-        return (cx - halfW, cx + halfW, cy - 14, cy + 4, cx, cy);
+        int half = Math.Max(4, size / 2);
+        return (cx - half, cx + half, cy - size + 1, cy + 2, cx, cy);
     }
 
-    /// <summary>铺活动区域的边界墙（地面与出生点由 BuildSpawnPlatform 负责）。必须在本世界线程上跑。</summary>
-    private static void BuildAreaWalls(ServerContext ctx, int halfW)
+    /// <summary>枚举活动区域的圈墙坐标（左右两道竖墙 + 天花板；地板由 BuildSpawnPlatform 负责）。</summary>
+    private static IEnumerable<(int x, int y)> EnumerateAreaWalls(ServerContext ctx, int size)
     {
-        (int minX, int maxX, _, _, _, int cy) = AreaRect(ctx, halfW);
-        for (int y = cy - 12; y <= cy - 1; y++)
+        (int minX, int maxX, int minY, _, _, int cy) = AreaRect(ctx, size);
+        for (int y = minY; y <= cy - 1; y++)
         {
-            SetStone(ctx, minX, y);
-            SetStone(ctx, maxX, y);
+            yield return (minX, y);
+            yield return (maxX, y);
         }
-        TShock.Log.Info($"[尘歌壶] 活动区域墙已铺: x=[{minX},{maxX}] 半宽={halfW}");
+        for (int x = minX + 1; x <= maxX - 1; x++)
+        {
+            yield return (x, minY);          // 天花板，防止从上面飞出去
+        }
     }
 
-    private static void SetStone(ServerContext ctx, int x, int y)
+    /// <summary>铺活动区域圈墙（石板 + 反色漆）。**必须在本世界线程上跑。**</summary>
+    private static void BuildAreaWalls(ServerContext ctx, int size)
+    {
+        (int minX, int maxX, int minY, _, _, int cy) = AreaRect(ctx, size);
+        foreach ((int x, int y) in EnumerateAreaWalls(ctx, size)) { SetPlate(ctx, x, y); }
+        TShock.Log.Info($"[尘歌壶] 活动区域圈墙已铺: 边长={size} x=[{minX},{maxX}] y=[{minY},{cy - 1}] 图格={_config.AreaWallTileId} 漆={_config.AreaWallPaintId}");
+    }
+
+    private static void SetPlate(ServerContext ctx, int x, int y)
     {
         if (x < 0 || y < 0 || x >= ctx.Main.maxTilesX || y >= ctx.Main.maxTilesY) { return; }
         ref var t = ref ctx.Main.tile[x, y];
         t.active(true);
-        t.type = (ushort)Terraria.ID.TileID.Stone;
+        t.type = (ushort)_config.AreaWallTileId;
+        if (_config.AreaWallPaintId >= 0) { try { t.color((byte)_config.AreaWallPaintId); } catch { } }
+    }
+
+    /// <summary>
+    /// 完整性校验 + 立即修复：圈墙上任何一格被破坏/被换材质/被掉漆，就地补回，并只把修复的格子同步给本世界玩家。
+    /// （"破坏就立即恢复"就是在这里做的；配合越界立即回传，玩家不可能靠挖墙出去。）
+    /// </summary>
+    private static void VerifyAndRepairWalls(ServerContext ctx, int size)
+    {
+        List<(int x, int y)> fixedTiles = [];
+        byte wantPaint = (byte)Math.Max(0, _config.AreaWallPaintId);
+        foreach ((int x, int y) in EnumerateAreaWalls(ctx, size))
+        {
+            if (x < 0 || y < 0 || x >= ctx.Main.maxTilesX || y >= ctx.Main.maxTilesY) { continue; }
+            ref var t = ref ctx.Main.tile[x, y];
+            bool bad = !t.active() || t.type != _config.AreaWallTileId
+                       || (_config.AreaWallPaintId >= 0 && t.color() != wantPaint);
+            if (!bad) { continue; }
+            SetPlate(ctx, x, y);
+            fixedTiles.Add((x, y));
+        }
+        if (fixedTiles.Count == 0) { return; }
+
+        for (int i = 0; i < 255; i++)
+        {
+            if (!ReferenceEquals(UnifiedServerCoordinator.GetClientCurrentlyServer(i), ctx)) { continue; }
+            TSPlayer? tp = TShock.Players.ElementAtOrDefault(i);
+            if (tp is null || !tp.Active) { continue; }
+            foreach ((int x, int y) in fixedTiles)
+            {
+                try { tp.SendTileSquareCentered(x, y, 1); } catch { }
+            }
+        }
+        TShock.Log.Info($"[尘歌壶] 活动区域圈墙被破坏，已立即修复 {fixedTiles.Count} 格");
     }
 
     /// <summary>越界检查定时器：只查"有人的已加载壶"，在工作线程上把人拽回中心。</summary>
@@ -850,17 +897,19 @@ public sealed class PocketWorldPlugin : BasePlugin
                 ServerContext? ctx = w?.Context;
                 if (ctx is null || !ctx.IsRunning) { continue; }
                 if (w!.Occupants.Count == 0) { continue; }
-                int halfW = AreaHalfWidth(pot.Key);
-                try { ctx.Dispatcher.Post(() => EnforceArea(ctx, halfW)); } catch { }
+                int size = AreaSize(pot.Key);
+                try { ctx.Dispatcher.Post(() => EnforceArea(ctx, size)); } catch { }
             }
         }
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 活动区域检查异常: " + ex.Message); }
     }
 
-    /// <summary>把越界玩家拉回中心。★ 必须在本世界线程上跑。</summary>
-    private static void EnforceArea(ServerContext ctx, int halfW)
+    /// <summary>越界立即回传 + 圈墙立即修复。★ 必须在本世界线程上跑。</summary>
+    private static void EnforceArea(ServerContext ctx, int size)
     {
-        (int minX, int maxX, int minY, int maxY, int cx, int cy) = AreaRect(ctx, halfW);
+        VerifyAndRepairWalls(ctx, size);
+
+        (int minX, int maxX, int minY, int maxY, int cx, int cy) = AreaRect(ctx, size);
         int landY = cy - Math.Max(1, _config.AreaReturnOffset);
 
         for (int i = 0; i < ctx.Main.player.Length; i++)
@@ -880,7 +929,7 @@ public sealed class PocketWorldPlugin : BasePlugin
 
             TSPlayer? tp = TShock.Players.ElementAtOrDefault(pl.whoAmI);
             try { ctx.NetMessage.SendData(13, -1, -1, null, pl.whoAmI); } catch { }   // 13 = MessageID.PlayerUpdate（发本世界）
-            tp?.SendInfoMessage($"[尘歌壶] 你已走出家园活动范围（±{halfW} 格），已被送回中心。");
+            tp?.SendInfoMessage($"[尘歌壶] 你已走出家园活动范围（{size}x{size}），已被送回中心。");
             TShock.Log.Info($"[尘歌壶] 活动区域：{tp?.Name ?? "?"} 越界({px},{py})，已回传中心");
         }
     }
@@ -893,22 +942,40 @@ public sealed class PocketWorldPlugin : BasePlugin
         string act = args.Parameters.Count > 1 ? args.Parameters[1].ToLowerInvariant() : "show";
         string key = OwnerKey(p);
         var prefs = Prefs.Get(key);
-        int halfW = AreaHalfWidth(key);
+        int size = AreaSize(key);
+        int maxLevel = Math.Max(0, (_config.AreaSizes?.Length ?? 1) - 1);
 
         if (act is "upgrade" or "up")
         {
-            int maxLevel = Math.Max(0, (_config.AreaMaxRadius - _config.AreaBaseRadius) / Math.Max(1, _config.AreaRadiusPerLevel));
             if (prefs.AreaLevel >= maxLevel)
             {
-                p.SendInfoMessage($"[尘歌壶] 活动区域已是最大（±{halfW} 格）。");
+                p.SendInfoMessage($"[尘歌壶] 活动区域已是最大（{size}x{size}）。");
                 return;
+            }
+
+            // 升级消耗：物品ID = 0 或 数量 = 0 → 不消耗
+            int need = Math.Max(0, _config.AreaUpgradeBaseCount + prefs.AreaLevel * _config.AreaUpgradeStepCount);
+            if (_config.AreaUpgradeItemId > 0 && need > 0)
+            {
+                int have = 0;
+                for (int i = 0; i < p.TPlayer.inventory.Length; i++)
+                {
+                    var it = p.TPlayer.inventory[i];
+                    if (it is not null && it.type == _config.AreaUpgradeItemId) { have += it.stack; }
+                }
+                if (have < need)
+                {
+                    p.SendErrorMessage($"[尘歌壶] 扩建需要 {need} 个（物品ID {_config.AreaUpgradeItemId}），你只有 {have} 个。");
+                    return;
+                }
+                ConsumeItems(p, _config.AreaUpgradeItemId, need);
             }
 
             prefs.AreaLevel++;
             Prefs.Save();
-            int newHalf = AreaHalfWidth(key);
-            p.SendSuccessMessage($"[尘歌壶] 活动区域已扩大到 ±{newHalf} 格（等级 {prefs.AreaLevel}）。");
-            TShock.Log.Info($"[尘歌壶] {p.Name} 活动区域升级 -> 等级={prefs.AreaLevel} 半宽={newHalf}");
+            int newSize = AreaSize(key);
+            p.SendSuccessMessage($"[尘歌壶] 活动区域已扩大到 {newSize}x{newSize}（等级 {prefs.AreaLevel}）{(need > 0 ? $"，消耗 {need} 个" : "")}。");
+            TShock.Log.Info($"[尘歌壶] {p.Name} 活动区域升级 -> 等级={prefs.AreaLevel} 边长={newSize} 消耗={need}x{_config.AreaUpgradeItemId}");
 
             // 壶已加载就立刻重铺（否则下次进入生效）
             IVirtualWorld? w = _core?.Find(key);
@@ -921,8 +988,8 @@ public sealed class PocketWorldPlugin : BasePlugin
                     {
                         try
                         {
-                            ctx.BuildSpawnPlatform(newHalf);
-                            BuildAreaWalls(ctx, newHalf);
+                            ctx.BuildSpawnPlatform(Math.Max(4, newSize / 2));
+                            BuildAreaWalls(ctx, newSize);
                             try { ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false); } catch { }
                         }
                         catch (Exception ex) { TShock.Log.Error("[尘歌壶] 扩建重铺失败: " + ex.Message); }
@@ -933,7 +1000,23 @@ public sealed class PocketWorldPlugin : BasePlugin
             return;
         }
 
-        p.SendInfoMessage($"[尘歌壶] 家园活动区域：{(_config.AreaEnabled ? "已启用" : "已关闭")}；当前 ±{halfW} 格，等级 {prefs.AreaLevel}。用 /{"cg"} area upgrade 扩大。");
+        p.SendInfoMessage($"[尘歌壶] 家园活动区域：{(_config.AreaEnabled ? "已启用" : "已关闭")}；当前 {size}x{size}，等级 {prefs.AreaLevel}/{maxLevel}。用 /{"cg"} area upgrade 扩大。");
+    }
+
+    /// <summary>从玩家背包扣除指定物品（调用前必须已确认数量足够）。</summary>
+    private static void ConsumeItems(TSPlayer p, int itemId, int need)
+    {
+        ServerContext? ctx = UnifiedServerCoordinator.GetClientCurrentlyServer(p.Index);
+        for (int i = 0; i < p.TPlayer.inventory.Length && need > 0; i++)
+        {
+            var it = p.TPlayer.inventory[i];
+            if (it is null || it.type != itemId || it.stack <= 0) { continue; }
+            int take = Math.Min(it.stack, need);
+            it.stack -= take;
+            need -= take;
+            if (it.stack <= 0) { it.type = 0; it.stack = 0; }
+            try { ctx?.NetMessage.SendData(5, -1, -1, null, p.Index, i); } catch { }   // 5 = PlayerSlot
+        }
     }
 
     private static int _keyLogged;
