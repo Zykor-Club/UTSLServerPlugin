@@ -120,7 +120,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             _idleTimer = new Timer(_ => IdleTick(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
         }
 
-        TShock.Log.Info($"[尘歌壶] 已加载（上限={_config.MaxPots}，闲置销毁={_config.IdleDestroySeconds}s，指令=/{"cg"}）");
+        TShock.Log.Info($"[尘歌壶] 已加载（上限={_config.MaxPots}，闲置销毁={(_config.IdleDestroySeconds > 0 ? _config.IdleDestroySeconds + "s" : "常驻")}，指令=/{"cg"}）");
         TShock.Log.Info(_core is not null
             ? $"[尘歌壶] 服务发现: 已取得 VirtualWorldCore（契约 v{VirtualWorldApi.Version}）"
             : _apiVersionMismatch
@@ -783,6 +783,10 @@ public sealed class MyPotWorldPlugin : BasePlugin
             _core.StateCheck();
 
             long now = NowMs;
+            // ★ <= 0 = 常驻：永不因闲置而销毁。
+            //   （配置注释一直写着"0 = 不自动销毁"，但旧实现算出来 limit=0，
+            //    `now - LastActive < 0` 恒为 false → 会每 tick 都判定超时并销毁，与注释不符）
+            bool neverIdleDestroy = _config.IdleDestroySeconds <= 0;
             long limit = _config.IdleDestroySeconds * 1000L;
             foreach (var kv in Pots.ToArray())
             {
@@ -819,7 +823,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
 
                 // ★ 铁律②：以【真实在线且确实路由到该世界】的玩家数为准，不信记录
                 if (_core.CountLiveOccupants(world) > 0) { continue; }
-                if (now - pot.LastActiveMs < limit) { continue; }
+                if (neverIdleDestroy || now - pot.LastActiveMs < limit) { continue; }
 
                 // ★ 双保险（世界玩家表里仍有 active 玩家就绝不销毁）在核心 DestroyAsync 里
                 pot.Destroying = true;

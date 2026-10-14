@@ -9,7 +9,7 @@ public sealed class MyPotWorldConfig
     [JsonPropertyName("启用")]
     public bool Enabled { get; set; } = true;
 
-    /// <summary>同时存在的尘歌壶上限（内存保护；每个壶约 100~170MB）。</summary>
+    /// <summary>同时存在的尘歌壶上限（内存保护）。实测：每个常驻壶 4200x2400 约 220~260MB。</summary>
     [JsonPropertyName("最大同时存在数")]
     public int MaxPots { get; set; } = 6;
 
