@@ -132,6 +132,9 @@ jobs:
             # 插件下载
             ### 每次仓库更新都会在这里发布最新的插件包。
             ### 下载 Plugins.zip 后解压，将 .dll 放入 UTSL 的 plugins 文件夹（只放插件自己的 dll）。
+            ### ★ VirtualWorldCore 系列（VirtualWorldCore / MyPotWorld / BossArena）请保持压缩包内的目录结构：
+            ###    plugins\VirtualWorldCore\        ← 核心与玩法要放在一起（同一个 ALC，契约类型身份才唯一）
+            ###    plugins\VirtualWorldCore\lib\    ← 契约程序集 VirtualWorldCore.Abstractions.dll
             ### 插件列表和文档：https://github.com/Zykor-Club/UTSLServerPlugin
             ### 当前适配：UnifierTSL (UTSL) / .NET 9.0
           artifacts: out/Plugins.zip
