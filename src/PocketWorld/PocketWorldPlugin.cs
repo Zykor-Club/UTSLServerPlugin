@@ -179,6 +179,28 @@ public sealed class PocketWorldPlugin : BasePlugin
     /// <summary>该实例是不是【本玩法的壶】。（核心只管占用，不区分归属；归属由玩法自己判）</summary>
     private static bool IsMyPot(IVirtualWorld? w) => w is not null && Pots.ContainsKey(w.Key);
 
+    /// <summary>
+    /// 假世界互通判定：玩家目前所在的【另一个假世界】是否允许他直接进壶。
+    /// null（从普通世界来）= 一直允许；互通关 = 必须先回普通世界。
+    /// </summary>
+    private static bool InteropAllows(IVirtualWorld? from)
+    {
+        if (from is null) { return true; }
+        if (!_config.InteropAllowEnter) { return false; }
+        string[] allow = _config.InteropAllowedSources;
+        return allow.Length == 0 || allow.Contains(from.Group);
+    }
+
+    /// <summary>壶的玩法策略：核心在进入/销毁前回调。</summary>
+    private sealed class PotPolicy : IVirtualWorldPolicy
+    {
+        public bool CanJoin(TSPlayer player, IVirtualWorld world) => InteropAllows(_core?.FindByOccupant(player.Index));
+        public bool CanDestroy(IVirtualWorld world) => true;
+        public void OnLoaded(IVirtualWorld world) { }
+        public void OnPlayerEntered(TSPlayer player, IVirtualWorld world) { }
+        public void OnPlayerLeft(TSPlayer player, IVirtualWorld world) { }
+    }
+
     /// <summary>主世界 = 非壶世界里的第一个在运行的世界。</summary>
     private static ServerContext? MainWorld() =>
         UnifiedServerCoordinator.Servers.FirstOrDefault(x => x.IsRunning && !x.Name.StartsWith("Pot_", StringComparison.Ordinal));
@@ -384,6 +406,8 @@ public sealed class PocketWorldPlugin : BasePlugin
             Key = pot.Key,
             DisplayName = pot.WorldName,
             OwnerKey = pot.Key,
+            Group = "PocketWorld",
+            Policy = new PotPolicy(),
             ServerName = "Pot_" + ShortKey(pot.Key),
             WorldFileName = WorldFileName(pot.OwnerName, pot.Key),
             TilesX = tileW,
@@ -553,9 +577,9 @@ public sealed class PocketWorldPlugin : BasePlugin
             p.SendInfoMessage("[尘歌壶] 你已经在自己的壶里了。用 /" + "cg" + " exit 返回。");
             return;
         }
-        if (occ is not null)
+        if (occ is not null && !InteropAllows(occ))
         {
-            p.SendInfoMessage($"[尘歌壶] 你当前在「{occ.DisplayName}」里，请先退出那里再进壶。");
+            p.SendInfoMessage($"[尘歌壶] 你当前在「{occ.DisplayName}」里，且本玩法未允许从假世界直接进入；请先退出那里。");
             return;
         }
 

@@ -16,6 +16,12 @@ public interface IVirtualWorld
     /// <summary>拥有者标识；空串 = 公共实例。</summary>
     string OwnerKey { get; }
 
+    /// <summary>
+    /// 玩法标识（约定用插件名，如 "PocketWorld" / "BossArena"）。
+    /// 核心只当字符串透传：玩法靠它判断"这个世界是谁的"，并据此做假世界之间的互通白名单。
+    /// </summary>
+    string Group { get; }
+
     /// <summary>已加载时非空。</summary>
     ServerContext? Context { get; }
 

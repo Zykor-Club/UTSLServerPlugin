@@ -65,6 +65,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         VirtualWorldInstance w = worlds.GetOrAdd(request.Key,
             k => new VirtualWorldInstance(k, request.DisplayName, request.OwnerKey));
         w.Request = request;
+        w.Group = request.Group;
         if (w.IsLoaded) { w.Touch(); return w; }
 
         lock (w.LoadGate)
@@ -231,6 +232,14 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             return Task.FromResult(true);
         }
 
+        // ★ 不变式：任何玩家"要回去的世界"都不能被回收，否则他 exit 时回不去（假世界嵌套场景）
+        if (IsOnAnyReturnStack(ctx))
+        {
+            w.Touch();
+            Warn($"{Tag(w)} 销毁被否决：仍在某玩家的返回路径上");
+            return Task.FromResult(false);
+        }
+
         // ★ 铁律②：以【世界玩家表】为准；世界里还有 active 玩家 → 绝不销毁（双保险）
         if (HasActivePlayers(ctx))
         {
@@ -300,6 +309,22 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             return Task.FromResult(false);
         }
         return done.Task;
+    }
+
+    /// <summary>该世界是否还挂在某个玩家的返回路径（返回栈）上。</summary>
+    private bool IsOnAnyReturnStack(ServerContext ctx)
+    {
+        foreach (KeyValuePair<int, List<ServerContext>> kv in origins)
+        {
+            lock (kv.Value)
+            {
+                foreach (ServerContext s in kv.Value)
+                {
+                    if (ReferenceEquals(s, ctx)) { return true; }
+                }
+            }
+        }
+        return false;
     }
 
     private static bool HasActivePlayers(ServerContext ctx)

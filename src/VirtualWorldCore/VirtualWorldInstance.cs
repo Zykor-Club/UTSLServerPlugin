@@ -23,6 +23,7 @@ internal sealed class VirtualWorldInstance : IVirtualWorld
     public string Key { get; }
     public string DisplayName { get; }
     public string OwnerKey { get; }
+    public string Group { get; internal set; } = "";
 
     public ServerContext? Context { get; internal set; }
     public bool IsLoaded => Context is { IsRunning: true };

@@ -25,6 +25,8 @@ public sealed class BossArenaPlugin : BasePlugin
 
     private static IVirtualWorldCore? _core;
     private static bool _apiVersionMismatch;
+    private static BossArenaConfig _config = new();
+    private static string _configPath = "";
 
     /// <summary>服务发现：与初始化顺序无关（宿主在所有 InitializeAsync 之前调用）。</summary>
     public override void BeforeGlobalInitialize(ImmutableArray<IPluginContainer> plugins)
@@ -55,6 +57,9 @@ public sealed class BossArenaPlugin : BasePlugin
             if (initInfo.Plugin.Name == "TShock") { await initInfo.InitializationTask; }
         }
 
+        try { _configPath = Path.Combine(configRegistrar.Directory, "settings.json"); } catch { _configPath = ""; }
+        _config = BossArenaConfig.Load(_configPath);
+
         Commands.ChatCommands.Add(new Command("", Command, "ba"));
         TShock.Log.Info(_core is not null
             ? $"[BossArena] 已加载 v0.1.0（服务发现: 已取得 VirtualWorldCore，契约 v{VirtualWorldApi.Version}）"
@@ -65,6 +70,25 @@ public sealed class BossArenaPlugin : BasePlugin
 
     /// <summary>该实例是不是【本玩法的 Boss 场地】。</summary>
     private static bool IsArena(IVirtualWorld? w) => w is not null && w.Key == ArenaKey;
+
+    /// <summary>假世界互通判定：玩家目前所在的【另一个假世界】是否允许他直接进场地。</summary>
+    private static bool InteropAllows(IVirtualWorld? from)
+    {
+        if (from is null) { return true; }
+        if (!_config.InteropAllowEnter) { return false; }
+        string[] allow = _config.InteropAllowedSources;
+        return allow.Length == 0 || allow.Contains(from.Group);
+    }
+
+    /// <summary>场地的玩法策略：核心在进入/销毁前回调。</summary>
+    private sealed class ArenaPolicy : IVirtualWorldPolicy
+    {
+        public bool CanJoin(TSPlayer player, IVirtualWorld world) => InteropAllows(_core?.FindByOccupant(player.Index));
+        public bool CanDestroy(IVirtualWorld world) => true;
+        public void OnLoaded(IVirtualWorld world) { }
+        public void OnPlayerEntered(TSPlayer player, IVirtualWorld world) { }
+        public void OnPlayerLeft(TSPlayer player, IVirtualWorld world) { }
+    }
 
     private static void Command(CommandArgs args)
     {
@@ -100,7 +124,7 @@ public sealed class BossArenaPlugin : BasePlugin
         if (from is null) { p.SendErrorMessage("[BossArena] 找不到你当前所在的世界。"); return; }
         IVirtualWorld? occ = _core.FindByOccupant(p.Index);
         if (IsArena(occ) || from.Name == ArenaServerName) { p.SendInfoMessage("[BossArena] 你已经在场地里了。用 /ba exit 返回。"); return; }
-        if (occ is not null) { p.SendInfoMessage($"[BossArena] 你当前在「{occ.DisplayName}」里，请先退出那里再进 Boss 场地。"); return; }
+        if (occ is not null && !InteropAllows(occ)) { p.SendInfoMessage($"[BossArena] 你当前在「{occ.DisplayName}」里，且本玩法未允许从假世界直接进入；请先退出那里。"); return; }
 
         int tileW = from.Main.maxTilesX, tileH = from.Main.maxTilesY;
         p.SendInfoMessage("[BossArena] 正在准备 Boss 场地…");
@@ -142,6 +166,8 @@ public sealed class BossArenaPlugin : BasePlugin
             Key = ArenaKey,
             DisplayName = "Boss 场地",
             OwnerKey = "",                  // 公共实例
+            Group = "BossArena",
+            Policy = new ArenaPolicy(),
             ServerName = ArenaServerName,
             WorldFileName = ArenaWorldFile,
             TilesX = tileW,

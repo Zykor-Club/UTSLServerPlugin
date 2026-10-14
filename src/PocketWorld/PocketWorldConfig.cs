@@ -17,6 +17,14 @@ public sealed class PocketWorldConfig
     [JsonPropertyName("闲置销毁_秒")]
     public int IdleDestroySeconds { get; set; } = 600;
 
+    /// <summary>假世界互通：是否接受玩家从【另一个假世界】直接进入壶（开 = 场地等地可直接 /cg 过来）。</summary>
+    [JsonPropertyName("互通_允许从假世界进入")]
+    public bool InteropAllowEnter { get; set; } = true;
+
+    /// <summary>互通白名单：允许的来源玩法标识（约定用插件名，如 ["BossArena"]）。空数组 = 不限制来源玩法。</summary>
+    [JsonPropertyName("互通_允许的来源")]
+    public string[] InteropAllowedSources { get; set; } = [];
+
 
 
 

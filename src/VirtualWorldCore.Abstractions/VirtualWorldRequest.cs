@@ -17,6 +17,9 @@ public sealed class VirtualWorldRequest
     public string DisplayName = "";
     public string OwnerKey = "";
 
+    /// <summary>玩法标识（约定用插件名，如 "PocketWorld"）。供其它玩法做互通白名单判断。</summary>
+    public string Group = "";
+
     /// <summary>ServerContext 名字；空 = 核心生成 &lt;key 前 12 位&gt;。</summary>
     public string ServerName = "";
 
