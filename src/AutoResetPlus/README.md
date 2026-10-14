@@ -22,6 +22,9 @@
 ## 配置
 配置文件路径：`config/AutoResetPlus/MultiWorld.json`
 
+> ⚠️ **下面三个路径必须自己改**：源码内置的默认值是**作者本机路径**（`C:\Users\...`），
+> 在别的机器上会因找不到文件而重置失败。本文示例用占位写法，**不要照抄**。
+
 ```json
 {
   "源地图名": "SourceMap",
@@ -31,9 +34,9 @@
   "切片数": 3,
   "重叠量": 28,
   "世界链": ["West", "Dev", "East"],
-  "切分工具路径": "D:\\Tools\\UTSLStitchTool\\UTSLStitchTool.exe",
-  "服务器路径": "D:\\UTSLServer\\UnifierTSL.exe",
-  "服务器工作目录": "D:\\UTSLServer",
+  "切分工具路径": "<你自己的 UTSLStitchTool.exe 绝对路径>",
+  "服务器路径": "<你自己的 UnifierTSL.exe 绝对路径>",
+  "服务器工作目录": "<你自己的服务器工作目录>",
   "下次重置种子": null,
   "重置后世界名": null,
   "替换文件": {},
