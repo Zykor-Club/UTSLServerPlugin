@@ -198,7 +198,9 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                     string? templatePath = TemplatePathFor(request, Utilities.IO.GetWorldPathFromName(request.WorldFileName, true));
                     if (templatePath is not null && !File.Exists(templatePath))
                     {
-                        ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false);
+                        // ★ 这里【不要再 SaveWorld】：玩法在 OnLoaded 里应该已经把基线状态落盘了
+                        //   （例如 ClearCurrentWorld() 内部就会 SaveWorld，见 ServerContext.World.cs:130-135）。
+                        //   重复存盘要序列化整张图（10M 格，实测 ~0.8s），纯属浪费。
                         string? tdir = Path.GetDirectoryName(templatePath);
                         if (!string.IsNullOrEmpty(tdir)) { Directory.CreateDirectory(tdir); }
                         File.Copy(Utilities.IO.GetWorldPathFromName(request.WorldFileName, true), templatePath, overwrite: true);
