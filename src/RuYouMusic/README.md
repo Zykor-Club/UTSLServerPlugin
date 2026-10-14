@@ -1,9 +1,11 @@
-# RuYouMusic（点歌机 · 服务端）
+# RuYouMusic 点歌机（服务端）
+- **作者**: 星梦
+- **版本**: v1.0.0
 
 配套管理器插件：`UTSLManager.Avalonia/extensions/RuYouMusicPanel`
-配套客户端插件：**待写**（本文末尾给出它必须实现的东西，按此实现即可对接）
+配套客户端插件见仓库 `src/RuYouMusic/client`
 
-## 功能
+## 功能概述
 
 - 搜索（网易云，走 https://music-api.gdstudio.xyz/api.php）、队列、自动下一首、中途加入的进度对齐
 - 把「播放/停止/音量」下发给装了客户端插件的玩家；客户端自己下载音频并播放（不占服务器带宽）
