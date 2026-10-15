@@ -10,19 +10,21 @@ namespace WorldCommandChannel;
 /// <summary>
 /// WorldCommandChannel —— 按世界执行指令的 REST 通道（供外部管理器使用）。
 ///
-/// 背景：UTSL 是【单进程多世界】，TShock 自带的 /v3/server/rawcmd 只能落到默认世界，
-/// 外部管理器无法对指定世界发指令。本插件补上这个能力：
-///
 ///   GET  /world/list
-///        -> 世界列表（名称、尺寸、在线人数、是否运行）
-///   POST /world/command?world={名称|序号|all}&cmd={指令}
-///        -> 对指定世界执行指令；world 省略或 all 表示【所有世界】
-///        -> 返回 {"status":"200","response":[...]}（与 TShock rawcmd 同格式，便于管理器复用）
+///   POST /world/command?world={名称|序号|all}&cmd={指令}[&scope=console]
+///        -> response 是**指令的真实输出**（能取到就返回；取不到则说明输出在上方日志流里）
 ///
-/// 执行语义与在控制台敲完全等价：CommandExecutor(SourceServer=目标世界, UserId=byte.MaxValue)
-/// 即 UTSL 的「服务器权限 + 指定世界」。
+/// 执行走宿主提供的 TShockConsoleCommand.TryExecute（内部就是 UTSL 控制台那一套：
+/// activity scope + TShock 专用执行上下文），所以 V2 指令（/help、/time 等）也能匹配并拿到 CommandOutcome。
+///
+/// scope=world（默认）：以**该世界的控制台**身份执行（世界相关指令语义正确）。
+/// scope=console：以**启动器控制台**身份执行（全局类指令）。
+///
+/// ★ 历史坑（已解决）：早先直接 CommandExecutor(srv, byte.MaxValue) + Commands.HandleCommand
+///   只能拿到分派回显；看 CommandExecutor.SendMessage 的实现就知道，世界控制台分支输出只进该世界 logger。
+///   宿主侧已补丁：世界控制台分支同时回传 RestPlayer、并镜像一份到静态 logger（落 logs\*.log）。
 /// </summary>
-[PluginMetadata("WorldCommandChannel", "1.0.0", "星梦", "按世界执行指令的 REST 通道（供外部管理器使用）")]
+[PluginMetadata("WorldCommandChannel", "1.0.0", "星梦", "按世界执行指令的 REST 通道（返回真实输出）")]
 public sealed class WorldCommandChannelPlugin : BasePlugin
 {
     public override Task InitializeAsync(
@@ -32,7 +34,7 @@ public sealed class WorldCommandChannelPlugin : BasePlugin
     {
         TShock.RestApi.Register(new SecureRestCommand("/world/list", WorldList, RestPermissions.restapi));
         TShock.RestApi.Register(new SecureRestCommand("/world/command", WorldCommand, RestPermissions.restapi));
-        TShock.Log.Info("[WorldCommandChannel] 已注册 /world/list 与 /world/command（按世界执行指令）");
+        TShock.Log.Info("[WorldCommandChannel] 已注册 /world/list 与 /world/command（按世界执行指令，返回真实输出）");
         return Task.CompletedTask;
     }
 
@@ -72,7 +74,7 @@ public sealed class WorldCommandChannelPlugin : BasePlugin
         };
     }
 
-    /// <summary>对指定世界（或全部世界）执行指令。</summary>
+    /// <summary>对指定世界（或全部世界）执行指令，并返回指令的真实输出。</summary>
     private static object WorldCommand(RestRequestArgs args)
     {
         string selector = GetParam(args, "world");
@@ -83,6 +85,8 @@ public sealed class WorldCommandChannelPlugin : BasePlugin
             return new Dictionary<string, object?> { ["status"] = "400", ["error"] = "缺少 cmd 参数" };
         }
         if (!cmd.StartsWith('/')) { cmd = "/" + cmd; }
+        // scope=console：以启动器控制台身份执行（其余情况都用"该世界的控制台"身份）
+        bool consoleScope = GetParam(args, "scope").Trim().Equals("console", StringComparison.OrdinalIgnoreCase);
 
         List<ServerContext> all = [.. UnifiedServerCoordinator.Servers.Where(s => s.IsRunning)];
         List<ServerContext> targets;
@@ -105,27 +109,51 @@ public sealed class WorldCommandChannelPlugin : BasePlugin
             return new Dictionary<string, object?> { ["status"] = "404", ["error"] = "找不到世界: " + selector };
         }
 
-        Group group = new SuperAdminGroup();
-        TSRestPlayer restPlayer = new(args.TokenData.Username, group);
         List<string> output = [];
-        foreach (ServerContext srv in targets)
+        bool multi = targets.Count > 1;      // 只有多世界时才加 [世界] 前缀，单世界直接给内容
+        // 启动器控制台口径只需要跑一次（与具体世界无关）
+        IEnumerable<ServerContext?> scopeTargets = consoleScope ? [null] : targets.Cast<ServerContext?>();
+        foreach (ServerContext? srv in scopeTargets)
         {
+            List<string> lines = [];
+            if (multi && srv is not null) { output.Add("[" + srv.Name + "]"); }
             try
             {
-                CommandExecutor executor = new(srv, byte.MaxValue, restPlayer);
-                Commands.HandleCommand(executor, cmd);
-                output.Add($"[{srv.Name}] -> {cmd}");
+                // ★ 判据是"宿主是否已经执行过"（TryExecute 返回 Handled，含调度器内部的老式兜底），
+                //   **不能**用"有没有拿到文本"、也**不能**用"V2 是否 Matched"：
+                //   V2 指令的输出走终端活动通道（落日志），outcome 里常常是空的 ——
+                //   若拿"文本为空"当信号就会把同一条指令**再执行一遍**（/save、/give 会被执行两次！实测过）。
+                bool matched = TShockConsoleCommand.TryExecute(cmd, out IReadOnlyList<string> got, srv);
+                foreach (string line in got)
+                {
+                    foreach (string part in line.Replace("\r\n", "\n").Split('\n'))
+                    {
+                        if (part.Trim().Length > 0) { lines.Add(part.TrimEnd()); }
+                    }
+                }
+
+                // 没匹配上才退回老式路径（插件指令/老式指令走这里）：
+                // 用"世界控制台身份"执行（不传 RestPlayer，语义不变），输出由宿主补丁镜像进日志。
+                if (!matched)
+                {
+                    CommandExecutor exec = new(srv, byte.MaxValue);
+                    if (!Commands.HandleCommand(exec, cmd)) { lines.Add("未知指令（没有这个命令）"); }
+                    // 老式指令的输出同样在日志流里 —— 不再回"已执行，输出见日志流"这类提示（用户要求去掉）
+                }
             }
             catch (Exception ex)
             {
-                output.Add($"[{srv.Name}] 失败: {ex.Message}");
+                lines.Add("执行失败: " + ex.Message);
             }
+
+            foreach (string line in lines) { output.Add(multi && srv is not null ? "  " + line : line); }
         }
+
         return new Dictionary<string, object?>
         {
             ["status"] = "200",
             ["world"] = selector,
-            ["count"] = targets.Count,
+            ["count"] = consoleScope ? 1 : targets.Count,
             ["response"] = output,
         };
     }
