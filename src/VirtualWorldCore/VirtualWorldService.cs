@@ -45,6 +45,91 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             ? null
             : worlds.Values.FirstOrDefault(w => string.Equals(w.OwnerKey, ownerKey, StringComparison.Ordinal));
 
+    // ==================== 模板基线 ====================
+
+    /// <summary>模板基线目录（&lt;Worlds&gt;/_vwc_templates）。</summary>
+    private static string? TemplatesDir()
+    {
+        try
+        {
+            string probe = Utilities.IO.GetWorldPathFromName("_vwc_probe", true);
+            string? dir = Path.GetDirectoryName(probe);
+            return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "_vwc_templates");
+        }
+        catch { return null; }
+    }
+
+    public IReadOnlyList<string> ListTemplates(int tilesX, int tilesY)
+    {
+        List<string> names = [];
+        try
+        {
+            string? dir = TemplatesDir();
+            if (dir is not null && Directory.Exists(dir))
+            {
+                string suffix = $"_" + tilesX + "x" + tilesY + ".wld";
+                foreach (string f in Directory.GetFiles(dir, "*.wld"))
+                {
+                    string n = Path.GetFileName(f);
+                    if (n.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) { names.Add(n[..^suffix.Length]); }
+                }
+            }
+        }
+        catch (Exception ex) { Warn($"[模板] 列举失败: {ex.Message}"); }
+        names.Sort(StringComparer.OrdinalIgnoreCase);
+        return names;
+    }
+
+    public async Task<VirtualWorldResult> SaveTemplateAsync(IVirtualWorld world, string name, CancellationToken ct)
+    {
+        ServerContext? ctx = world?.Context;
+        if (ctx is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例未加载，无法导出模板"); }
+
+        string safe = (name ?? "").Trim();
+        if (safe.Length == 0) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "模板名不能为空"); }
+        foreach (char c in Path.GetInvalidFileNameChars()) { safe = safe.Replace(c, '_'); }
+
+        int tx = ctx.Main.maxTilesX, ty = ctx.Main.maxTilesY;
+        string? dir = TemplatesDir();
+        if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位模板目录"); }
+
+        try
+        {
+            // ★ 存档必须在该世界自己的更新线程上跑
+            TaskCompletionSource<bool> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            ctx.Dispatcher.Post(() =>
+            {
+                try { ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false); tcs.TrySetResult(true); }
+                catch (Exception exSave) { tcs.TrySetException(exSave); }
+            });
+            await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+
+            string? potFile = ctx.Main.worldPathName;
+            if (string.IsNullOrEmpty(potFile) || !File.Exists(potFile))
+            {
+                return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "找不到该实例的世界文件");
+            }
+
+            Directory.CreateDirectory(dir);
+            string dstFile = Path.Combine(dir, safe + "_" + tx + "x" + ty + ".wld");
+            try { File.Copy(potFile, dstFile, overwrite: true); }
+            catch (Exception exCopy)
+            {
+                Warn($"[模板] File.Copy 失败({exCopy.GetType().Name})，改用流式复制");
+                using FileStream srcFs = File.OpenRead(potFile);
+                using FileStream dstFs = File.Create(dstFile);
+                srcFs.CopyTo(dstFs);
+            }
+            Info($"[模板] 已导出模板基线: {dstFile}");
+            return VirtualWorldResult.Ok;
+        }
+        catch (Exception ex)
+        {
+            Error($"[模板] 导出失败: {ex.Message}");
+            return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message);
+        }
+    }
+
     internal VirtualWorldInstance? FindByContext(ServerContext? ctx) =>
         ctx is null ? null : worlds.Values.FirstOrDefault(w => ReferenceEquals(w.Context, ctx));
 

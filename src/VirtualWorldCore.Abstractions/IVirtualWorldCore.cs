@@ -36,6 +36,17 @@ public interface IVirtualWorldCore
     /// </summary>
     Task<VirtualWorldResult> DestroyAsync(IVirtualWorld world, bool save, CancellationToken ct);
 
+    // ===== 模板基线（建筑模板 / 空白模板复用）=====
+
+    /// <summary>列出某尺寸下可用的模板基线名（含自动缓存产生的，如 pot_blank）；按名字排序。</summary>
+    IReadOnlyList<string> ListTemplates(int tilesX, int tilesY);
+
+    /// <summary>
+    /// 把实例当前的世界另存为模板基线（同尺寸；名字会做文件名净化）。
+    /// 之后同尺寸的新实例把 <see cref="VirtualWorldRequest.TemplateKey"/> 设成这个名字，即可直接复制它建世界。
+    /// </summary>
+    Task<VirtualWorldResult> SaveTemplateAsync(IVirtualWorld world, string name, CancellationToken ct);
+
     // ===== 记账查询与看护（玩法侧需要；对应改造前 PocketWorld 的 Inside / Janitor / SelfHeal / StateCheck）=====
 
     /// <summary>玩家当前所在的实例（按占用记录）；不在任何实例返回 null。</summary>
