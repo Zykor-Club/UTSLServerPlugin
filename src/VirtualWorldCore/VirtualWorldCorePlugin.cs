@@ -23,6 +23,23 @@ public sealed class VirtualWorldCorePlugin : BasePlugin, IVirtualWorldCoreProvid
 
     public IVirtualWorldCore Api => service;
 
+    /// <summary>
+    /// 区块建筑模板（.utpl）在真实 ServerContext 上的端到端自检：
+    /// 建隔离世界 → 铺内容 → SaveRegionAsync → 清空 → ApplyTemplateAsync → 逐格/逐实体比对。
+    /// 结果通过 <paramref name="log"/> 逐行回报（调用方是 _utplverify 之类的测试插件）。
+    /// ★ 它会在服务端建/改世界，所以**默认关闭**：必须显式设环境变量 UTSL_UTPL_SELFTEST=1 才执行
+    ///   （与调用方 UtplVerify 插件用的是同一个变量名，避免"设了却静默跳过"）。
+    /// </summary>
+    public Task<string> RunUtplSelfTestAsync(string seedWorldPath, Action<string> log, CancellationToken ct)
+    {
+        if (Environment.GetEnvironmentVariable("UTSL_UTPL_SELFTEST") != "1")
+        {
+            log("已跳过 .utpl 自检：需要环境变量 UTSL_UTPL_SELFTEST=1（它会建/改服务端世界）");
+            return Task.FromResult("skipped");
+        }
+        return UtplSelfTest.RunAsync(service, seedWorldPath, log, ct);
+    }
+
     /// <summary>契约版本，供玩法发现时校验。</summary>
     public int ApiVersion => VirtualWorldApi.Version;
 

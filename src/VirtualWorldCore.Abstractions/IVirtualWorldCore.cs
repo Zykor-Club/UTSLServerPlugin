@@ -47,6 +47,30 @@ public interface IVirtualWorldCore
     /// </summary>
     Task<VirtualWorldResult> SaveTemplateAsync(IVirtualWorld world, string name, CancellationToken ct);
 
+    // ===== 区块建筑模板（.utpl；v7）=====
+    // 与"整世界模板基线"的区别：这里搬的是【任意矩形】的图格 + 箱子/标牌/实体，
+    // 目的是能贴进玩法的活动区域（整世界模板只解决"新壶初始内容"）。
+
+    /// <summary>列出已保存的区块模板（扫模板目录下的 *.utpl；按名字排序）。</summary>
+    IReadOnlyList<VirtualWorldTemplateInfo> ListRegionTemplates();
+
+    /// <summary>按名查找某个区块模板的元信息；不存在返回 null。</summary>
+    VirtualWorldTemplateInfo? FindRegionTemplate(string name);
+
+    /// <summary>
+    /// 把实例里【指定矩形】的地区另存为区块模板（图格 + 箱子 + 标牌 + 实体）。
+    /// 矩形会被夹到世界边界内；越界或空矩形 → <see cref="VirtualWorldFailure.PolicyRejected"/>。
+    /// 实际写盘在该世界自己的更新线程上完成。
+    /// </summary>
+    Task<VirtualWorldResult> SaveRegionAsync(IVirtualWorld world, string name, int x, int y, int w, int h, CancellationToken ct);
+
+    /// <summary>
+    /// 把区块模板贴到实例的 (x,y) —— (x,y) 是【模板左上角】的目标世界坐标。
+    /// 语义：先把"模板尺寸对应的目标矩形"（夹到世界边界内）清空（含销毁旧箱子/标牌/实体），再写入模板内容。
+    /// 贴图格之前不重算帧（保留模板原始 frame）；调用方负责把改动用 SendTileSquare 推给客户端。
+    /// </summary>
+    Task<VirtualWorldResult> ApplyTemplateAsync(IVirtualWorld world, string name, int x, int y, CancellationToken ct);
+
     // ===== 记账查询与看护（玩法侧需要；对应改造前 PocketWorld 的 Inside / Janitor / SelfHeal / StateCheck）=====
 
     /// <summary>玩家当前所在的实例（按占用记录）；不在任何实例返回 null。</summary>

@@ -17,6 +17,13 @@ public sealed class MyPotWorldConfig
     [JsonPropertyName("闲置销毁_秒")]
     public int IdleDestroySeconds { get; set; } = 600;
 
+    /// <summary>
+    /// 壶里有玩家时，每隔多少秒自动落盘一次（0 = 关闭定时保存）。
+    /// 进入/离开/贴模板/扩建/闲置销毁本来就会存档；这个是给"搭到一半服务端被重启"兜底的。
+    /// </summary>
+    [JsonPropertyName("保存间隔_秒")]
+    public int SaveIntervalSeconds { get; set; } = 60;
+
     /// <summary>假世界互通：是否接受玩家从【另一个假世界】直接进入壶（开 = 场地等地可直接 /cg 过来）。</summary>
     [JsonPropertyName("互通_允许从假世界进入")]
     public bool InteropAllowEnter { get; set; } = true;

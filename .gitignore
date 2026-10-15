@@ -27,3 +27,7 @@ publish/
 
 ## 工作区说明文件：本地保留，不提交
 AGENT.md
+
+# 本地临时自检脚手架（不入库）
+_utplverify/
+_utpltest/

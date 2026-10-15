@@ -17,6 +17,12 @@ public sealed class PlayerPrefs
 
     /// <summary>壶内无敌（默认开；离开壶时由插件清除）。</summary>
     [JsonPropertyName("无敌")] public bool God { get; set; } = true;
+
+    /// <summary>
+    /// 建壶时用的【整世界模板基线】名（对应 Worlds/_vwc_templates/&lt;名&gt;_&lt;宽&gt;x&lt;高&gt;.wld）。
+    /// 空 = 用默认 pot_blank。建房请用 /cg save + /cg paste（区块模板），这个只影响"新壶初始内容"。
+    /// </summary>
+    [JsonPropertyName("模板")] public string Template { get; set; } = "";
 }
 
 public static class Prefs

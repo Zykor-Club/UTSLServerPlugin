@@ -6,6 +6,9 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Terraria;
+using Terraria.DataStructures;
+using Terraria.GameContent.Tile_Entities;
 using TShockAPI;
 using UnifierTSL;
 using UnifierTSL.Servers;
@@ -32,6 +35,15 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
     /// <summary>最后一次使用的日志前缀（无请求上下文时的兜底）。</summary>
     private const string DefaultTag = "[VirtualWorldCore]";
+
+    // 图格实体类型 ID（= 存档/网络协议里的稳定值，见 TrProtocol.Models.TileEntityType）
+    private const int TeTrainingDummy = 0;
+    private const int TeItemFrame = 1;
+    private const int TeLogicSensor = 2;
+    private const int TeDisplayDoll = 3;
+    private const int TeWeaponsRack = 4;
+    private const int TeHatRack = 5;
+    private const int TeFoodPlatter = 6;
 
     // ==================== 注册表 ====================
 
@@ -127,6 +139,442 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         {
             Error($"[模板] 导出失败: {ex.Message}");
             return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message);
+        }
+    }
+
+    // ==================== 区块建筑模板（.utpl，v7）====================
+
+    /// <summary>区块模板目录（&lt;Worlds&gt;/_utpl_templates）。</summary>
+    private static string? UtplDir()
+    {
+        try
+        {
+            string probe = Utilities.IO.GetWorldPathFromName("_vwc_probe", true);
+            string? dir = Path.GetDirectoryName(probe);
+            return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "_utpl_templates");
+        }
+        catch { return null; }
+    }
+
+    public IReadOnlyList<VirtualWorldTemplateInfo> ListRegionTemplates()
+    {
+        List<VirtualWorldTemplateInfo> list = [];
+        try
+        {
+            string? dir = UtplDir();
+            if (dir is not null && Directory.Exists(dir))
+            {
+                foreach (string f in Directory.GetFiles(dir, "*" + UtplFormat.Extension))
+                {
+                    string name = Path.GetFileNameWithoutExtension(f);
+                    list.Add(UtplFormat.TryReadSize(f, out int w, out int h)
+                        ? new VirtualWorldTemplateInfo(name, w, h)
+                        : new VirtualWorldTemplateInfo(name, 0, 0));
+                }
+            }
+        }
+        catch (Exception ex) { Warn($"[区块模板] 列举失败: {ex.Message}"); }
+        list.Sort(static (a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        return list;
+    }
+
+    public VirtualWorldTemplateInfo? FindRegionTemplate(string name)
+    {
+        string? safe = UtplFormat.SanitizeName(name);
+        if (safe is null) { return null; }
+        string? dir = UtplDir();
+        if (dir is null) { return null; }
+        string file = Path.Combine(dir, safe + UtplFormat.Extension);
+        if (!File.Exists(file)) { return null; }
+        return UtplFormat.TryReadSize(file, out int w, out int h)
+            ? new VirtualWorldTemplateInfo(safe, w, h)
+            : new VirtualWorldTemplateInfo(safe, 0, 0);
+    }
+
+    /// <summary>【自检用】直接把 .utpl 读成内存快照（不走世界线程）。</summary>
+    internal UtplRegion ReadTemplateForTest(string path) => UtplFormat.Read(path);
+
+    public async Task<VirtualWorldResult> SaveRegionAsync(IVirtualWorld world, string name, int x, int y, int w, int h, CancellationToken ct)
+    {
+        ServerContext? ctx = (world as VirtualWorldInstance)?.Context;
+        if (ctx is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例未加载，无法导出区块模板"); }
+        if (w <= 0 || h <= 0) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"矩形尺寸非法: {w}x{h}"); }
+
+        string? safe = UtplFormat.SanitizeName(name);
+        if (safe is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "模板名不能为空或含非法字符"); }
+        string? dir = UtplDir();
+        if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位区块模板目录"); }
+
+        try
+        {
+            TaskCompletionSource<UtplRegion?> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            ctx.Dispatcher.Post(() =>
+            {
+                try { tcs.TrySetResult(CaptureRegion(ctx, x, y, w, h)); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            });
+            UtplRegion? region = await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+            if (region is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "矩形与世界没有交集，未导出"); }
+
+            Directory.CreateDirectory(dir);
+            string dst = Path.Combine(dir, safe + UtplFormat.Extension);
+            await Task.Run(() => UtplFormat.Write(dst, region), ct).ConfigureAwait(false);
+            Info($"[区块模板] 已导出: {dst}（{region.W}x{region.H}，箱子={region.Chests.Count}，标牌={region.Signs.Count}，实体={region.Entities.Count}）");
+            return VirtualWorldResult.Ok;
+        }
+        catch (Exception ex)
+        {
+            Error($"[区块模板] 导出失败: {ex}");
+            return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message);
+        }
+    }
+
+    public async Task<VirtualWorldResult> ApplyTemplateAsync(IVirtualWorld world, string name, int x, int y, CancellationToken ct)
+    {
+        ServerContext? ctx = (world as VirtualWorldInstance)?.Context;
+        if (ctx is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例未加载，无法粘贴区块模板"); }
+
+        string? safe = UtplFormat.SanitizeName(name);
+        if (safe is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "模板名不能为空或含非法字符"); }
+        string? dir = UtplDir();
+        if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位区块模板目录"); }
+        string src = Path.Combine(dir, safe + UtplFormat.Extension);
+        if (!File.Exists(src)) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"模板不存在: {safe}"); }
+
+        try
+        {
+            UtplRegion region = await Task.Run(() => UtplFormat.Read(src), ct).ConfigureAwait(false);
+
+            // ★ 坐标口径（踩过坑，务必保持）：.utpl 的箱子/标牌/实体坐标全部是【模板内相对坐标】，
+            //   文件里不含世界原点；贴入时一律 (tx + 记录坐标)。曾经箱子存绝对、标牌存相对，
+            //   导致箱子被当成越界全部裁掉。
+            region.X = 0;
+            region.Y = 0;
+
+            var tcs = new TaskCompletionSource<(int tiles, int chests, int signs, int ents)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ctx.Dispatcher.Post(() =>
+            {
+                try { StringBuilder diag = new(); var r = PasteRegion(ctx, region, x, y, diag); LastPasteDiag = diag.ToString(); tcs.TrySetResult(r); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            });
+            (int tiles, int chests, int signs, int ents) = await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+            Info($"[区块模板] 已粘贴 '{safe}' 到 ({x},{y})：图格={tiles}，箱子={chests}，标牌={signs}，实体={ents}");
+            if (LastPasteDiag.Length > 0) { Warn($"[区块模板] 粘贴诊断: {LastPasteDiag}"); }
+            return VirtualWorldResult.Ok;
+        }
+        catch (Exception ex)
+        {
+            Error($"[区块模板] 粘贴失败: {ex}");
+            return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message);
+        }
+    }
+
+    // ==================== 区块模板：捕获 / 粘贴（★ 必须在本世界线程上跑）====================
+
+    /// <summary>捕获矩形快照。返回 null = 矩形与世界无交集。</summary>
+    private static UtplRegion? CaptureRegion(ServerContext ctx, int x, int y, int w, int h)
+    {
+        int maxX = ctx.Main.maxTilesX, maxY = ctx.Main.maxTilesY;
+        int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
+        int x1 = Math.Min(maxX, Math.Max(0, x) + w), y1 = Math.Min(maxY, Math.Max(0, y) + h);
+        if (x1 <= x0 || y1 <= y0) { return null; }
+
+        int rw = x1 - x0, rh = y1 - y0;
+        UtplRegion region = new() { X = x0, Y = y0, W = rw, H = rh, Tiles = new TileData[rw * rh] };
+        for (int ly = 0; ly < rh; ly++)
+        {
+            for (int lx = 0; lx < rw; lx++) { region.Tiles[ly * rw + lx] = ctx.Main.tile[x0 + lx, y0 + ly]; }
+        }
+
+        // 箱子：只收【左上角落在矩形内】的（否则贴出来会缺一半）
+        Chest[] chests = ctx.Main.chest;
+        for (int i = 0; i < chests.Length; i++)
+        {
+            Chest? c = chests[i];
+            // ★ 必须整个 2x2 都在矩形内，否则记录坐标会落在 region 之外 → 贴入时按相对偏移算会错位
+            if (c is null || c.x < x0 || c.x + 1 >= x1 || c.y < y0 || c.y + 1 >= y1) { continue; }
+            // ★ 记录坐标一律存【模板内相对坐标】（= 世界坐标 - 矩形左上角），
+            //   这样 .utpl 不带世界原点也能正确贴到任意位置（三个记录段必须同口径）。
+            UtplChest uc = new() { X = c.x - x0, Y = c.y - y0, Name = c.name ?? "" };
+            if (c.item is not null)
+            {
+                for (int s = 0; s < UtplFormat.ChestSlots && s < c.item.Length; s++)
+                {
+                    Item? it = c.item[s];
+                    if (it is null || it.type <= 0) { continue; }
+                    uc.Items[s] = (it.type, Math.Max(1, it.stack), it.prefix);
+                }
+            }
+            region.Chests.Add(uc);
+        }
+
+        // 标牌
+        Sign[] signs = ctx.Main.sign;
+        for (int i = 0; i < signs.Length; i++)
+        {
+            Sign? s = signs[i];
+            if (s is null || s.x < x0 || s.x >= x1 || s.y < y0 || s.y >= y1) { continue; }
+            region.Signs.Add(new UtplSign { X = s.x - x0, Y = s.y - y0, Text = s.text ?? "" });
+        }
+
+        // v2 实体：物品框 / 盘子 / 人偶 / 帽架 / 逻辑感应器 / 武器架
+        foreach (KeyValuePair<Point16, TileEntity> kv in ctx.TileEntity.ByPosition)
+        {
+            TileEntity ent = kv.Value;
+            if (ent is null) { continue; }
+            int ex = ent.Position.X, ey = ent.Position.Y;
+            if (ex < x0 || ex >= x1 || ey < y0 || ey >= y1) { continue; }
+            int lx = ex - x0, ly = ey - y0;   // 同样存模板内相对坐标
+            UtplEntity? ue = ent switch
+            {
+                TEItemFrame frame => MakeEntity(UtplFormat.KindItemFrame, lx, ly, [frame.item]),
+                TEWeaponsRack rack => MakeEntity(UtplFormat.KindWeaponsRack, lx, ly, [rack.item]),
+                TEFoodPlatter platter => MakeEntity(UtplFormat.KindFoodPlatter, lx, ly, [platter.item]),
+                TEHatRack hatRack => MakeEntity(UtplFormat.KindHatRack, lx, ly, Concat(hatRack._items, hatRack._dyes)),
+                TEDisplayDoll doll => MakeEntity(UtplFormat.KindDisplayDoll, lx, ly, Concat(doll._equip, doll._dyes)),
+                TELogicSensor ls => new UtplEntity { Kind = UtplFormat.KindLogicSensor, X = lx, Y = ly, On = ls.On },
+                _ => null,
+            };
+            if (ue is not null) { region.Entities.Add(ue); }
+        }
+
+        return region;
+    }
+
+    private static UtplEntity MakeEntity(byte kind, int x, int y, Item?[] items)
+    {
+        UtplEntity e = new() { Kind = kind, X = x, Y = y };
+        foreach (Item? it in items)
+        {
+            e.Slots.Add(it is null || it.type <= 0 ? (0, 0, 0) : (it.type, Math.Max(1, it.stack), it.prefix));
+        }
+        return e;
+    }
+
+    private static Item?[] Concat(Item[]? a, Item[]? b)
+    {
+        int na = a?.Length ?? 0, nb = b?.Length ?? 0;
+        Item?[] r = new Item?[na + nb];
+        for (int i = 0; i < na; i++) { r[i] = a![i]; }
+        for (int i = 0; i < nb; i++) { r[na + i] = b![i]; }
+        return r;
+    }
+
+    /// <summary>粘贴：先清空目标矩形（含旧箱子/标牌/实体），再写图格，最后重建箱子/标牌/实体。</summary>
+    private static (int tiles, int chests, int signs, int ents) PasteRegion(ServerContext ctx, UtplRegion region, int tx, int ty, StringBuilder? diag = null)
+    {
+        int maxX = ctx.Main.maxTilesX, maxY = ctx.Main.maxTilesY;
+        int px0 = Math.Max(0, tx), py0 = Math.Max(0, ty);
+        int px1 = Math.Min(maxX, tx + region.W), py1 = Math.Min(maxY, ty + region.H);
+        if (px1 <= px0 || py1 <= py0) { return (0, 0, 0, 0); }
+
+        int tiles = 0;
+
+        // ---- 1) 清空目标矩形 ----
+        for (int wy = py0; wy < py1; wy++)
+        {
+            for (int wx = px0; wx < px1; wx++)
+            {
+                ctx.TileEntity.Kill(wx, wy, -1);        // 任何实体格
+                ctx.Main.tile[wx, wy].ClearEverything();
+            }
+        }
+        // 旧箱子 / 旧标牌（按左上角 / 牌坐标扫）
+        Chest[] chests = ctx.Main.chest;
+        for (int i = 0; i < chests.Length; i++)
+        {
+            Chest? c = chests[i];
+            if (c is null || c.x < px0 || c.x > px1 - 1 || c.y < py0 || c.y > py1 - 1) { continue; }
+            try { ctx.Chest.DestroyChest(c.x, c.y); } catch (Exception ex) { Warn($"[区块模板] 清旧箱子({c.x},{c.y})失败: {ex.Message}"); }
+        }
+        Sign[] signs = ctx.Main.sign;
+        for (int i = 0; i < signs.Length; i++)
+        {
+            Sign? s = signs[i];
+            if (s is null || s.x < px0 || s.x >= px1 || s.y < py0 || s.y >= py1) { continue; }
+            try { Sign.KillSign(ctx, s.x, s.y); } catch (Exception ex) { Warn($"[区块模板] 清旧标牌({s.x},{s.y})失败: {ex.Message}"); }
+        }
+
+        // ---- 2) 写图格 ----
+        for (int wy = py0; wy < py1; wy++)
+        {
+            int ly = wy - ty;
+            for (int wx = px0; wx < px1; wx++)
+            {
+                int lx = wx - tx;
+                TileData src = region.At(lx, ly);
+                ref TileData dst = ref ctx.Main.tile[wx, wy];
+                if (!UtplFormat.IsEmpty(src)) { tiles++; }
+                dst = src;
+            }
+        }
+
+        // ---- 3) 重建箱子 ----
+        int chestCount = 0;
+        foreach (UtplChest uc in region.Chests)
+        {
+            // 记录坐标 = 模板内相对坐标 → 加贴入点即可
+            int cx = tx + uc.X, cy = ty + uc.Y;
+            if (cx < px0 || cx > px1 - 2 || cy < py0 || cy > py1 - 2)
+            {
+                diag?.Append($"箱子({cx},{cy})被裁 [tx={tx} ty={ty} region.XY=({region.X},{region.Y}) uc=({uc.X},{uc.Y}) 范围=[{px0},{px1}]x[{py0},{py1}]]; ");
+                continue;   // 超出贴入范围：裁掉
+            }
+            try
+            {
+                int idx = ctx.Chest.CreateChest(cx, cy);
+                if (idx < 0 || idx >= chests.Length) { Warn($"[区块模板] CreateChest({cx},{cy}) 返回 {idx}，跳过"); diag?.Append($"箱子({cx},{cy})CreateChest返回{idx}; "); continue; }
+                Chest? c = chests[idx];
+                if (c is null) { continue; }
+                c.name = uc.Name ?? "";
+                if (c.item is null || c.item.Length < UtplFormat.ChestSlots) { try { c.Resize(UtplFormat.ChestSlots); } catch { } }
+                if (c.item is null) { continue; }
+                for (int s = 0; s < UtplFormat.ChestSlots && s < c.item.Length; s++)
+                {
+                    (int type, int stack, int prefix) = uc.Items[s];
+                    if (type <= 0) { c.item[s] = new Item(); continue; }
+                    c.item[s] = new Item();
+                    c.item[s].SetDefaults(ctx, type);
+                    c.item[s].stack = Math.Max(1, stack);
+                    c.item[s].prefix = (byte)prefix;
+                }
+                chestCount++;
+            }
+            catch (Exception ex) { Warn($"[区块模板] 建箱子({cx},{cy})失败: {ex.Message}"); }
+        }
+
+        // ---- 4) 重建标牌 ----
+        int signCount = 0;
+        foreach (UtplSign us in region.Signs)
+        {
+            int sx = tx + us.X, sy = ty + us.Y;
+            if (sx < px0 || sx >= px1 || sy < py0 || sy >= py1) { continue; }
+            try
+            {
+                if (sx < 0 || sy < 0 || sx >= ctx.Main.maxTilesX || sy >= ctx.Main.maxTilesY) { continue; }
+                if (!ctx.Main.tile[sx, sy].active()) { diag?.Append($"标牌({sx},{sy})该格没图格; "); continue; }
+
+                // ★★ 标牌的两个实测坑：
+                //   1) 记录坐标是【Sign 对象坐标】。Sign 对象登记在牌子 frame=(0,0) 的那一格，
+                //      而 PlaceSign 要的是"牌子基准格"——两者差一格，用 PlaceSign 很容易摆歪/摆不上。
+                //   2) 图格已经从模板原样写好了 → 正确的补法是用 ReadSign(CreateIfMissing:=true)
+                //      只补出 Sign 对象（它按 frameX/18、frameY/18 反推对象坐标，正好落在记录位置上）。
+                int existing = Sign.ReadSign(ctx, sx, sy, false);
+                if (existing < 0)
+                {
+                    existing = Sign.ReadSign(ctx, sx, sy, true);
+                }
+                if (existing < 0 || existing >= signs.Length || signs[existing] is null)
+                {
+                    Warn($"[区块模板] 标牌({sx},{sy}) 无法建立（ReadSign 返回 {existing}），跳过该标牌");
+                    diag?.Append($"标牌({sx},{sy})建立失败(ReadSign={existing}); ");
+                    continue;
+                }
+                signs[existing].text = us.Text ?? "";
+                signCount++;
+            }
+            catch (Exception ex) { Warn($"[区块模板] 建标牌({sx},{sy})失败: {ex.Message}"); }
+        }
+
+        // ---- 5) 重建 v2 实体 ----
+        int entCount = 0;
+        foreach (UtplEntity ue in region.Entities)
+        {
+            int ex = tx + ue.X, ey = ty + ue.Y;
+            if (ex < px0 || ex >= px1 || ey < py0 || ey >= py1) { continue; }
+            try
+            {
+                if (!ctx.Main.tile[ex, ey].active()) { diag?.Append($"实体kind={ue.Kind}({ex},{ey})该格没图格; "); continue; }
+                if (ue.Kind == UtplFormat.KindLogicSensor)
+                {
+                    if (!PlaceEntity(ctx, ex, ey, TeLogicSensor, out TileEntity? lsEnt)) { continue; }
+                    if (lsEnt is TELogicSensor ls) { ls.On = ue.On; }
+                    entCount++;
+                    continue;
+                }
+                int type = ue.Kind switch
+                {
+                    UtplFormat.KindItemFrame => TeItemFrame,
+                    UtplFormat.KindDisplayDoll => TeDisplayDoll,
+                    UtplFormat.KindHatRack => TeHatRack,
+                    UtplFormat.KindFoodPlatter => TeFoodPlatter,
+                    UtplFormat.KindWeaponsRack => TeWeaponsRack,
+                    _ => -1,
+                };
+                if (type < 0) { continue; }
+                if (!PlaceEntity(ctx, ex, ey, type, out _)) { diag?.Append($"实体kind={ue.Kind}({ex},{ey})放置失败; "); continue; }
+                Item?[]? slots = null;
+                if (ue.Kind == UtplFormat.KindItemFrame && ctx.TileEntity.TryGetAt(ex, ey, out TEItemFrame frame) && frame is not null)
+                {
+                    slots = [frame.item];
+                }
+                else if (ue.Kind == UtplFormat.KindWeaponsRack && ctx.TileEntity.TryGetAt(ex, ey, out TEWeaponsRack wrack) && wrack is not null)
+                {
+                    slots = [wrack.item];
+                }
+                else if (ue.Kind == UtplFormat.KindFoodPlatter && ctx.TileEntity.TryGetAt(ex, ey, out TEFoodPlatter platter) && platter is not null)
+                {
+                    slots = [platter.item];
+                }
+                else if (ue.Kind == UtplFormat.KindHatRack && ctx.TileEntity.TryGetAt(ex, ey, out TEHatRack hatRack) && hatRack is not null)
+                {
+                    slots = [.. (hatRack._items ?? []), .. (hatRack._dyes ?? [])];
+                }
+                else if (ue.Kind == UtplFormat.KindDisplayDoll && ctx.TileEntity.TryGetAt(ex, ey, out TEDisplayDoll doll) && doll is not null)
+                {
+                    slots = [.. (doll._equip ?? []), .. (doll._dyes ?? [])];
+                }
+                if (slots is not null) { ApplyItems(ctx, ue, slots); }
+                entCount++;
+            }
+            catch (Exception exMsg) { Warn($"[区块模板] 重建实体(kind={ue.Kind},{ex},{ey})失败: {exMsg.Message}"); }
+        }
+
+        return (tiles, chestCount, signCount, entCount);
+    }
+
+    /// <summary>
+    /// 在 (x,y) 放一个图格实体。
+    /// ★ 坑（实测）：<c>ctx.TileEntity.Place(x,y,type)</c> **其实放成功了，但返回值是 0**
+    ///   （反编译确认：它 return 的是 ent.ID，而 Add 之前 ID 还是 0）→
+    ///   绝对不能用 `<= 0` 判定失败，必须以 ByPosition 里"该坐标有没有实体"为准。
+    /// </summary>
+    private static bool PlaceEntity(ServerContext ctx, int x, int y, int type, out TileEntity? ent)
+    {
+        ent = null;
+        try
+        {
+            ctx.TileEntity.Place(x, y, type);
+            if (ctx.TileEntity.TryGetAt(x, y, out TileEntity got) && got is not null) { ent = got; return true; }
+            Warn($"[区块模板] 实体放置失败: type={type} @({x},{y})（ByPosition 里没有）");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Warn($"[区块模板] 实体放置异常: type={type} @({x},{y}) {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>区块模板目录（自检/诊断用）。</summary>
+    internal static string? TemplatesDirForTest() => UtplDir();
+
+    /// <summary>【自检用】上一次粘贴的详细诊断。</summary>
+    internal static string LastPasteDiag = "";
+
+    /// <summary>把记录里的槽位贴回目标 Item 数组（长度不匹配时贴能贴的部分）。</summary>
+    private static void ApplyItems(UnifiedServerProcess.RootContext ctx, UtplEntity ue, Item?[] target)
+    {
+        int n = Math.Min(ue.Slots.Count, target.Length);
+        for (int i = 0; i < n; i++)
+        {
+            (int type, int stack, int prefix) = ue.Slots[i];
+            if (type <= 0) { continue; }
+            Item it = new();
+            it.SetDefaults(ctx, type);
+            it.stack = Math.Max(1, stack);
+            it.prefix = (byte)prefix;
+            target[i] = it;
         }
     }
 
