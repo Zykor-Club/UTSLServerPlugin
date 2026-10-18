@@ -75,6 +75,9 @@
 | 日志 | TShock.Log.Warn | TShock.Log.Warning（Warn 在 UTSL 已移除） |
 | 命令执行者 | 控制台执行时 args.Player = TSPlayer.Server | 控制台执行时 args.Player 为 null，已回退到 args.ExecutorActor |
 
+## 说明
+- 拦截分三层：客户端上报信息、登录完成、每 tick 扫描；`/gb` 动态管理，无需手改配置。
+
 ## 插件版本
 ### v1.1.0 (2026-08-12)
 - 新增 /gb 指令集，支持动态管理黑名单和豁免名单
