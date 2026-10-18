@@ -54,6 +54,27 @@ public sealed class EdgeStitchConfig
     [JsonPropertyName("切片间距_格")]
     public int SliceDeltaTiles { get; set; }
 
+    // ===== 运维开关 =====
+
+    /// <summary>总开关：关掉后不再触发换乘（已在途的换乘仍会收尾）。</summary>
+    [JsonPropertyName("启用")]
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>每次换乘输出一条明细日志。</summary>
+    [JsonPropertyName("换乘日志")]
+    public bool TransferLog { get; set; } = true;
+
+    /// <summary>诊断日志：玩家接近边缘时输出判定依据（默认关，排查时才开）。</summary>
+    [JsonPropertyName("诊断日志")]
+    public bool DiagnosticLog { get; set; }
+
+    /// <summary>诊断日志的最小输出间隔（毫秒）。</summary>
+    [JsonPropertyName("诊断间隔_毫秒")]
+    public int DiagnosticIntervalMs { get; set; } = 5000;
+
+    /// <summary>写回配置文件（/stitch on|off 用）。</summary>
+    public void Save(string path) => File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+
     /// <summary>按世界名取陆地边缘（大小写不敏感）。</summary>
     public WorldLandEdges? Resolve(string worldName)
     {

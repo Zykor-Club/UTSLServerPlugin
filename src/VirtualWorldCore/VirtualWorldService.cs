@@ -856,6 +856,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         }
 
         var done = new TaskCompletionSource<VirtualWorldResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var posted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             ctx.Dispatcher.Post(() =>
@@ -878,7 +879,6 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                             TSPlayer? ctp = TShock.Players.ElementAtOrDefault(ci);
                             if (ctp is not null && ctp.Active)
                             {
-                                // 真人不会走到这里：上方"世界玩家表"守卫已保证世界内无 active 玩家
                                 continue;
                             }
                             if (TShock.Players[ci] is not null) { TShock.Players[ci] = null; }
@@ -886,20 +886,12 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                         }
                         catch { }
                     }
-
-                    try { ctx.Close().Wait(TimeSpan.FromSeconds(60)); } catch (Exception ex) { Warn($"{Tag(w)} Close 异常: {ex.Message}"); }
-                    try { UnifiedServerCoordinator.RemoveServer(ctx); } catch (Exception ex) { Warn($"{Tag(w)} RemoveServer 异常: {ex.Message}"); }
-
-                    w.Context = null;
-                    Remove(w.Key);
-                    Info($"{Tag(w)} {w.DisplayName} 已成功卸载。");
-                    WorldDestroyed?.Invoke(w);
-                    done.TrySetResult(VirtualWorldResult.Ok);
+                    posted.TrySetResult(true);
                 }
                 catch (Exception ex)
                 {
-                    Error($"{Tag(w)} 卸载失败: {ex}");
-                    done.TrySetResult(VirtualWorldResult.Fail(VirtualWorldFailure.Exception, ex.Message));
+                    Error($"{Tag(w)} 卸载前处理失败: {ex}");
+                    posted.TrySetResult(false);
                 }
             });
         }
@@ -908,6 +900,33 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
             Error($"{Tag(w)} 卸载投递失败: {ex.Message}");
             return Task.FromResult(VirtualWorldResult.Fail(VirtualWorldFailure.NotRunning, ex.Message));
         }
+
+        // ★ 关键：Close() 内部会 Join 世界线程；如果像旧实现那样在 Post 回调（跑在世界线程上）里调它，
+        //   就是『自己等自己』→ 必然卡满 Wait 超时（实测 60 秒）。所以先等世界线程把存档/清理做完，
+        //   再在【调用方线程】上 Close。
+        long t0 = Environment.TickCount64;
+        if (!posted.Task.Wait(TimeSpan.FromSeconds(10)))
+        {
+            Warn($"{Tag(w)} 卸载前任务超时（10s），继续强制卸载");
+        }
+        try
+        {
+            Task closeTask = ctx.Close();
+            if (!closeTask.Wait(TimeSpan.FromSeconds(15)))
+            {
+                Warn($"{Tag(w)} Close 超时（15s）：世界线程可能仍在睡眠，先继续清理");
+            }
+        }
+        catch (Exception ex) { Warn($"{Tag(w)} Close 异常: {ex.Message}"); }
+        Info($"{Tag(w)} 关闭世界耗时 {Environment.TickCount64 - t0} ms");
+
+        try { UnifiedServerCoordinator.RemoveServer(ctx); } catch (Exception ex) { Warn($"{Tag(w)} RemoveServer 异常: {ex.Message}"); }
+
+        w.Context = null;
+        Remove(w.Key);
+        Info($"{Tag(w)} {w.DisplayName} 已成功卸载。");
+        WorldDestroyed?.Invoke(w);
+        done.TrySetResult(VirtualWorldResult.Ok);
         return done.Task;
     }
 

@@ -21,7 +21,7 @@ namespace EdgeStitch;
 ///   - UnifiedServerCoordinator.TransferPlayerToServer(byte plr, ServerContext to)
 ///     （plr 是客户端索引；必须在源世界的 update 线程上调用）
 /// </summary>
-[PluginMetadata("EdgeStitch", "1.0.0", "星梦", "多世界边缘无缝拼接：走到世界边缘自动进入相邻世界的对应边缘")]
+[PluginMetadata("EdgeStitch", "1.2.1", "星梦", "多世界边缘无缝拼接：走到世界边缘自动进入相邻世界的对应边缘")]
 public sealed class EdgeStitchPlugin : BasePlugin
 {
     private readonly EdgeTransferManager _manager = new();
@@ -47,6 +47,12 @@ public sealed class EdgeStitchPlugin : BasePlugin
 
         UnifierApi.EventHub.Game.PostUpdate.Register(OnPostUpdate, HandlerPriority.Normal);
         UnifierApi.EventHub.Netplay.LeaveEvent.Register(OnServerLeave, HandlerPriority.Normal);
+        Commands.ChatCommands.Add(new Command("", StitchCommand, "stitch"));
+
+        foreach (string warn in _manager.Validate(includeRuntime: false))
+        {
+            TShock.Log.Warning("[EdgeStitch] 配置自检: " + warn);
+        }
 
         TShock.Log.Info($"[EdgeStitch] 已加载，世界链: {string.Join(" — ", _manager.Config.WorldChain)}"
             + $"（环={_manager.Config.Loop}，边缘带={_manager.Config.EdgeBandTiles}格，冷却={_manager.Config.CooldownMs}ms）");
@@ -58,6 +64,8 @@ public sealed class EdgeStitchPlugin : BasePlugin
         {
             UnifierApi.EventHub.Game.PostUpdate.UnRegister(OnPostUpdate);
             UnifierApi.EventHub.Netplay.LeaveEvent.UnRegister(OnServerLeave);
+            System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+            Commands.ChatCommands.RemoveAll(c => c.CommandDelegate.Method?.DeclaringType?.Assembly == asm);
         }
         return ValueTask.CompletedTask;
     }
@@ -68,4 +76,56 @@ public sealed class EdgeStitchPlugin : BasePlugin
 
     private void OnServerLeave(ref ReadonlyNoCancelEventArgs<LeaveEvent> args)
         => _manager.ClearPlayer(args.Content.Who);
+
+    /// <summary>/stitch [status|reload|on|off|diag]</summary>
+    private void StitchCommand(CommandArgs args)
+    {
+        string sub = args.Parameters.Count > 0 ? args.Parameters[0].ToLowerInvariant() : "status";
+        bool admin = args.Player is null || args.Player.HasPermission("tshock.admin");
+
+        switch (sub)
+        {
+            case "reload":
+                if (!admin) { Reply(args, "[EdgeStitch] 没有权限。"); return; }
+                _manager.Config = EdgeStitchConfig.Load(_configPath);
+                Reply(args, $"[EdgeStitch] 已重载配置（{string.Join(" — ", _manager.Config.WorldChain)}）");
+                List<string> warns = _manager.Validate();
+                if (warns.Count == 0) { Reply(args, "[EdgeStitch] 自检通过"); }
+                else { foreach (string w in warns) { Reply(args, "[EdgeStitch] ⚠ " + w); } }
+                break;
+            case "on":
+            case "off":
+                if (!admin) { Reply(args, "[EdgeStitch] 没有权限。"); return; }
+                _manager.Config.Enabled = sub == "on";
+                TrySave(args);
+                Reply(args, $"[EdgeStitch] 换乘已{(sub == "on" ? "开启" : "关闭")}");
+                break;
+            case "diag":
+                if (!admin) { Reply(args, "[EdgeStitch] 没有权限。"); return; }
+                _manager.Config.DiagnosticLog = !_manager.Config.DiagnosticLog;
+                TrySave(args);
+                Reply(args, $"[EdgeStitch] 诊断日志已{(_manager.Config.DiagnosticLog ? "开启" : "关闭")}");
+                break;
+            case "status":
+            default:
+                foreach (string line in _manager.Describe()) { Reply(args, "[EdgeStitch] " + line); }
+                break;
+        }
+    }
+
+    private void TrySave(CommandArgs args)
+    {
+        try { _manager.Config.Save(_configPath); }
+        catch (Exception ex)
+        {
+            TShock.Log.Warning("[EdgeStitch] 保存配置失败: " + ex.Message);
+            Reply(args, "[EdgeStitch] 保存配置失败（本次仅内存生效）: " + ex.Message);
+        }
+    }
+
+    private static void Reply(CommandArgs args, string text)
+    {
+        if (args.Player is not null) { args.Player.SendInfoMessage(text); }
+        else { TShock.Log.Info(text); }
+    }
 }

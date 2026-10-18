@@ -25,12 +25,12 @@
 ### 2. 同步类
 | 插件 | 同步内容 |
 |:--|:--|
-| **EdgeStitch** | 换乘时的世界状态同步（62 个字段：时间/月相/血月/入侵/boss 进度等，每 2 秒 UnifyChain 对齐一次） |
+| **WorldChainSync** | 世界链状态同步（时间/月相/天气/困难模式/Boss 与事件进度/已解救 NPC；换乘瞬时同步 + 每 2 秒统一） |
 
 ### 3. UTSL 拓展类
 | 插件 | 拓展内容 |
 |:--|:--|
-| **EdgeStitch** | 多世界边缘无缝换乘（把多张同尺寸世界拼成一张连续大地图） |
+| **EdgeStitch** | 多世界边缘无缝换乘（把多张同尺寸世界拼成一张连续大地图；状态同步已拆到 WorldChainSync） |
 | **AutoResetPlus** | 整链重置（生成新源地图 → 重新切分 → 替换所有切片 → 重启） |
 | **GenerateMap** | 多世界独立出图 + 按世界链横向拼接成一张大地图（验收/宣传用） |
 | （UTSLStitchTool） | 不是插件，是配套命令行工具（切分/裁剪/分析 .wld） |
@@ -40,12 +40,14 @@
 |:--|:--|
 | **BetterBack** | /back 返回死亡点/传送点 |
 | **BossCommandExecutor** | BOSS 相关指令执行 |
-| **CommandTeleport** | 传送指令 |
 | **CustomDeathMessages** | 自定义死亡提示 |
 | **GroupBlacklist** | 用户组黑名单 |
 | **ItemHeldMessage** | 手持物品广播 |
 | **ItemPool** | 物品池 |
 | **MidiPlayer** | MIDI 音乐播放 |
+
+> 注：**CommandTeleport 不是我们的插件** —— 它在宿主 `UnifierTSL\src\Plugins\` 里（本仓库 src\ 下没有这个目录）。
+> 2026-10-18 已从上面两张表移除，避免口径混淆。
 
 ## 三、建议的目录结构
 
@@ -53,7 +55,7 @@
 UTSLServerPlugin/
 ├── src/
 │   ├── Fixes/            # 1. UTSL 修复插件
-│   ├── Sync/             # 2. 同步类
+│   ├── Sync/             # 2. 同步类（WorldChainSync）
 │   ├── Extensions/       # 3. UTSL 拓展类
 │   │   ├── EdgeStitch/           # （若侧重换乘玩法放这里）
 │   │   ├── AutoResetPlus/
@@ -61,15 +63,18 @@ UTSLServerPlugin/
 │   ├── Features/         # 4. 功能类
 │   │   ├── BetterBack/
 │   │   ├── BossCommandExecutor/
-│   │   ├── CommandTeleport/
 │   │   ├── CustomDeathMessages/
 │   │   ├── GroupBlacklist/
 │   │   ├── ItemHeldMessage/
 │   │   ├── ItemPool/
 │   │   └── MidiPlayer/
 │   └── Shared/           # 公共库
-└── manifest.json         # 每个插件标注 category 字段
+└── manifest.json         # 每个插件标注 category 字段（⚠ 当前未落地，见 §二后注）
 ~~~
+
+> ⚠ 2026-10-18 复核：**这条还没落地** —— 现有 16 个工程的 `manifest.json` 只有 `README` / `README.en-US`
+> 两个键（给 generate-readme.ps1 用的描述），**没有** name/version/category/summary；
+> 插件名/版本/作者来自源码里的 `[PluginMetadata]`。要按本文档归类，得先在打包/文档脚本里消费这些字段。
 
 **manifest.json 建议字段**：
 ~~~

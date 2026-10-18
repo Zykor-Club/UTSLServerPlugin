@@ -25,7 +25,7 @@ namespace MyPotWorld;
 ///   · 按需创建：玩家第一次 /cg 时建立属于他的壶；
 ///   · 闲置销毁：壶里没人超过「闲置销毁_秒」→ 调核心 DestroyAsync（存档 + Close + RemoveServer）。
 /// </summary>
-[PluginMetadata("MyPotWorld", "0.5.0", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
+[PluginMetadata("MyPotWorld", "0.6.2", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
 public sealed class MyPotWorldPlugin : BasePlugin
 {
     private static MyPotWorldConfig _config = new();
@@ -54,14 +54,26 @@ public sealed class MyPotWorldPlugin : BasePlugin
         public bool Destroying;          // 正在闲置卸载（与"创建中"分开，避免把访问误判成"正在准备"）
         public long DestroySinceMs;
         public bool Destroyed;           // 世界已被卸载（meta 保留到没人用，便于访问者等待后重建）
+        public bool Resetting;           // 正在被 /cg reset 重置（期间拒绝进入/选模板）
         public string LastSig = "";
         public int? OrigSpawnRate;                                 // 开启"禁止刷怪"前的原值（关掉时还原）
         public long LastActiveMs;
         public long LastSaveMs;                                    // 上次落盘时间（定时保存用）
         public bool Dirty;                                         // 上次存档后有没有改过（避免"没动也每 60 秒存一次"造成周期性卡顿）
+        public long LastAreaCheckMs;                               // 上次「圈墙校验」的时间（按 检查间隔毫秒 节流；越界回传不受影响）
     }
 
     private static readonly ConcurrentDictionary<string, Pot> Pots = new(StringComparer.Ordinal);
+
+    /// <summary>"棍母模板"（空模板）在 players.json 里的存储值。</summary>
+    private const string BlankTemplateKey = "__blank__";
+
+    /// <summary>模板尺寸上限：超过就不允许选（避免区域大到出界）。</summary>
+    private const int MaxTemplateWidth = 1500;
+    private const int MaxTemplateHeight = 1300;
+
+    /// <summary>/cg reset 的二次确认（60 秒内再输一次）。</summary>
+    private static readonly ConcurrentDictionary<string, long> _resetConfirmed = new(StringComparer.Ordinal);
 
     private static long NowMs => Environment.TickCount64;
 
@@ -69,7 +81,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
     /// 把某个壶存档到磁盘。存档必须跑在该世界的调度线程上。
     /// blocking=true 会同步等待——关服路径必须这样：进程退出后 Post 出去的任务根本不会被执行。
     /// </summary>
-    private static bool SavePot(IVirtualWorld world, string reason, bool blocking = false)
+    private static bool SavePot(IVirtualWorld world, string reason, Pot? pot = null, bool blocking = false)
     {
         ServerContext? ctx = world.Context;
         if (ctx is null || !ctx.IsRunning) { return false; }
@@ -79,6 +91,8 @@ public sealed class MyPotWorldPlugin : BasePlugin
             try
             {
                 ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false);
+                // ★ 只有真的存成功才清脏标记（旧实现由调用方无条件清，存档失败也会被当成已保存）
+                if (pot is not null) { pot.Dirty = false; }
                 TShock.Log.Info($"[尘歌壶] {world.DisplayName} 已存档（{reason}）");
             }
             catch (Exception ex) { TShock.Log.Warning($"[尘歌壶] {world.DisplayName} 存档失败（{reason}）: {ex.Message}"); }
@@ -115,7 +129,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 TShock.Log.Warning($"[尘歌壶] {reason}存档超出总预算（20 秒），剩余壶未保存");
                 break;
             }
-            if (SavePot(w, reason, blocking: true)) { n++; pot.Dirty = false; }
+            if (SavePot(w, reason, pot, blocking: true)) { n++; }
         }
         if (n > 0) { TShock.Log.Info($"[尘歌壶] {reason}前已存档 {n} 个壶"); }
     }
@@ -173,10 +187,11 @@ public sealed class MyPotWorldPlugin : BasePlugin
         PlayerHooks.PlayerLogout += OnLogout;
         PlayerHooks.PlayerChat += OnChat;
 
-        if (_config.IdleDestroySeconds > 0)
-        {
-            _idleTimer = new Timer(_ => IdleTick(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
-        }
+        // ★ 看护定时器【始终】跑：即使「闲置销毁_秒 = 0（常驻）」，它还要负责
+        //   Busy/Destroying 卡死保护、定时落盘（保存间隔_秒）、Reconcile/StateCheck。
+        //   旧实现把整个定时器放进 IdleDestroySeconds>0 的分支里 → 常驻模式下这些全部停摆：
+        //   创建中断线会让 Busy 永远为 true（壶再也进不去），建造过程中也不会定时存档。
+        _idleTimer = new Timer(_ => IdleTick(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
         TShock.Log.Info($"[尘歌壶] 已加载（上限={_config.MaxPots}，闲置销毁={(_config.IdleDestroySeconds > 0 ? _config.IdleDestroySeconds + "s" : "常驻")}，指令=/{"cg"}）");
         TShock.Log.Info(_core is not null
@@ -213,6 +228,13 @@ public sealed class MyPotWorldPlugin : BasePlugin
 
         switch (sub)
         {
+            case "":
+                Help(args);
+                break;
+            case "go":
+            case "enter":
+                Go(args);
+                break;
             case "exit":
             case "leave":
                 Leave(args);
@@ -220,23 +242,25 @@ public sealed class MyPotWorldPlugin : BasePlugin
             case "status":
                 Status(args);
                 break;
-            case "contact":
-            case "msg":
-                ToggleContact(args);
-                break;
-            case "sync":
-                ToggleSync(args);
-                break;
+            case "info":
             case "area":
             case "home":
-                AreaCommand(args);
+                if (args.Parameters.Count > 1 && (args.Parameters[1].Equals("up", StringComparison.OrdinalIgnoreCase) || args.Parameters[1].Equals("upgrade", StringComparison.OrdinalIgnoreCase) || args.Parameters[1] == "升级"))
+                    AreaCommand(args);
+                else
+                    Status(args);
                 break;
-            case "mob":
-            case "spawn":
-                ToggleNoSpawn(args);
+            case "tpl":
+                if (args.Parameters.Count > 1 && (args.Parameters[1].Equals("save", StringComparison.OrdinalIgnoreCase) || args.Parameters[1] == "保存"))
+                    SaveTemplateCommand(args, args.Parameters.Count > 2 ? args.Parameters[2] : "");
+                else
+                    TemplatesCommand(args);
                 break;
-            case "god":
-                ToggleGod(args);
+            case "set":
+                SetCommand(args);
+                break;
+            case "reset":
+                ResetCommand(args);
                 break;
             case "save":
             case "tplsave":
@@ -244,21 +268,15 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 SaveTemplateCommand(args);
                 break;
             case "templates":
-            case "tpl":
             case "模板":
                 TemplatesCommand(args);
-                break;
-            case "paste":
-            case "tplpaste":
-            case "粘贴":
-                PasteCommand(args);
                 break;
             case "visit":
             case "join":
                 Visit(args);
                 break;
             default:
-                Enter(args);
+                Help(args);
                 break;
         }
     }
@@ -318,7 +336,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             {
                 Pot? pot = Pots.Values.FirstOrDefault(v => string.Equals(v.Key, world.Key, StringComparison.Ordinal));
                 if (pot is not null) { pot.LastSaveMs = NowMs; }
-                if (SavePot(world, "玩家离开") && pot is not null) { pot.Dirty = false; }
+                SavePot(world, "玩家离开", pot);
             }
             catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 离开存档失败: " + ex.Message); }
         }
@@ -327,6 +345,20 @@ public sealed class MyPotWorldPlugin : BasePlugin
     /// <summary>主世界 = 非壶世界里的第一个在运行的世界。</summary>
     private static ServerContext? MainWorld() =>
         UnifiedServerCoordinator.Servers.FirstOrDefault(x => x.IsRunning && !x.Name.StartsWith("Pot_", StringComparison.Ordinal));
+
+    /// <summary>
+    /// 壶世界按【你当前世界】的尺寸建，但种子文件来自【主世界】——两者尺寸不同就会加载出错。
+    /// 所以在建壶前先比对一次，尺寸不一致直接拒绝并说明原因。
+    /// </summary>
+    private static bool SameSizeAsMainWorld(ServerContext from, out string why)
+    {
+        why = "";
+        ServerContext seed = MainWorld() ?? from;
+        if (seed.Main.maxTilesX == from.Main.maxTilesX && seed.Main.maxTilesY == from.Main.maxTilesY) { return true; }
+        why = $"你当前在 {from.Name}（{from.Main.maxTilesX}x{from.Main.maxTilesY}），主世界 {seed.Name} 是 {seed.Main.maxTilesX}x{seed.Main.maxTilesY}：尺寸不同，不能直接建壶。请先返回主世界。";
+        TShock.Log.Warning("[尘歌壶] 拒绝跨尺寸建壶: " + why);
+        return false;
+    }
 
     private static string OwnerKeyByIndex(int idx)
     {
@@ -383,7 +415,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         var prefs = Prefs.Get(OwnerKey(p));
         prefs.NoSpawn = !prefs.NoSpawn;
         Prefs.Save();
-        p.SendInfoMessage($"[尘歌壶] 壶内禁止自然刷怪：{(prefs.NoSpawn ? "已开启" : "已关闭")}");
+        Say(p, $"[尘歌壶] 壶内禁止自然刷怪：{(prefs.NoSpawn ? "已开启" : "已关闭")}");
     }
 
     /// <summary>切换「壶内无敌」（按壶主独立；默认开；离开壶会自动清除）。</summary>
@@ -394,7 +426,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         var prefs = Prefs.Get(OwnerKey(p));
         prefs.God = !prefs.God;
         Prefs.Save();
-        p.SendInfoMessage($"[尘歌壶] 壶内无敌：{(prefs.God ? "已开启" : "已关闭")}（离开壶后会自动清除）");
+        Say(p, $"[尘歌壶] 壶内无敌：{(prefs.God ? "已开启" : "已关闭")}（离开壶后会自动清除）");
     }
 
     private static void ToggleSync(CommandArgs args)
@@ -404,7 +436,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         var prefs = Prefs.Get(OwnerKey(p));
         prefs.Sync = !prefs.Sync;
         Prefs.Save();
-        p.SendInfoMessage($"[尘歌壶] 与主世界同步状态：{(prefs.Sync ? "已开启（时间持续同步，天气与进度变化时同步）" : "已关闭")}");
+        Say(p, $"[尘歌壶] 同步主世界状态：{(prefs.Sync ? "已开启（时间/天气/进度）" : "已关闭")}");
         if (prefs.Sync) { SyncNow(p.Index); }        // ★ 开启瞬间立即同步一次
     }
 
@@ -490,7 +522,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         var prefs = Prefs.Get(OwnerKey(p));
         prefs.Contact = !prefs.Contact;
         Prefs.Save();
-        p.SendInfoMessage($"[尘歌壶] 与主世界保持联系：{(prefs.Contact ? "已开启（聊天双向互通）" : "已关闭")}");
+        Say(p, $"[尘歌壶] 聊天互通：{(prefs.Contact ? "已开启" : "已关闭")}（壶内发言转发到主世界）");
     }
 
     /// <summary>
@@ -573,6 +605,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 int size = AreaSize(pot.Key);
                 ctx.BuildSpawnPlatform(Math.Max(4, size / 2));   // 地面 + 出生点（内部走完整簿记）
                 BuildAreaWalls(ctx, size);                        // 圈墙：石板 + 反色漆
+                ApplyCustomSpawn(ctx, pot.Key);                   // ★ 玩家的自定义出生点（必须在这两步之后）
                 try { ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false); } catch { }
             },
         }, CancellationToken.None);
@@ -599,159 +632,104 @@ public sealed class MyPotWorldPlugin : BasePlugin
     }
 
     /// <summary>/cg save &lt;名字&gt;：把当前【活动区域内部】存成区块模板（图格 + 箱子 + 标牌 + 实体）。</summary>
-    private static void SaveTemplateCommand(CommandArgs args)
+    private static void SaveTemplateCommand(CommandArgs args, string? nameOverride = null)
     {
         TSPlayer? p = args.Player;
         if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
-        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
-        if (!_config.AreaEnabled) { p.SendErrorMessage("[尘歌壶] 家园活动区域未启用，无法确定要保存的范围。"); return; }
+        if (_core is null) { Say(p, "[尘歌壶] 核心服务不可用。"); return; }
+        if (!_config.AreaEnabled) { Say(p, "[尘歌壶] 家园活动区域未启用，无法确定要保存的范围。"); return; }
 
-        if (args.Parameters.Count < 2)
+        string name = nameOverride ?? (args.Parameters.Count > 1 ? args.Parameters[1] : "");
+        if (string.IsNullOrWhiteSpace(name))
         {
-            p.SendInfoMessage("[尘歌壶] 用法：/cg save <名字> —— 把当前活动区域（含箱子、标牌）存成建筑模板。");
+            Say(p, "[尘歌壶] 用法：/cg tpl save <名字> —— 把当前活动区域（含箱子、标牌）存成模板。");
             return;
         }
-        string name = args.Parameters[1];
+        name = name.Trim();
 
         string key = OwnerKey(p);
         ServerContext? ctx = FindPotContext(p);
-        if (ctx is null) { p.SendErrorMessage("[尘歌壶] 你要先站在自己的尘歌壶里（/cg 进入）。"); return; }
+        if (ctx is null) { Say(p, "[尘歌壶] 你要先站在自己的尘歌壶里（/cg go 进入）。"); return; }
 
         int size = AreaSize(key);
         (int x0, int x1, int y0, int y1) = AreaInner(ctx, size);
         int w = x1 - x0 + 1, h = y1 - y0 + 1;
-        p.SendInfoMessage($"[尘歌壶] 正在保存模板「{name}」（{w}x{h}）…");
+        Say(p, $"[尘歌壶] 正在保存模板「{name}」（{w}x{h}）…");
 
         Task.Run(async () =>
         {
             try
             {
                 VirtualWorldResult res = await _core.SaveRegionAsync(_core.Find(key)!, name, x0, y0, w, h, CancellationToken.None).ConfigureAwait(false);
-                if (res.Success) { p.SendSuccessMessage($"[尘歌壶] 模板「{name}」已保存（{w}x{h}）。用 /cg templates 查看，/cg paste {name} 贴回来。"); }
-                else { p.SendErrorMessage($"[尘歌壶] 保存失败：{res.Message}"); }
+                if (res.Success) { Say(p, $"[尘歌壶] 模板「{name}」已保存（{w}x{h}）。用 /cg tpl 查看；/cg go <序号> 可套用到新壶。"); }
+                else { Say(p, $"[尘歌壶] 保存失败：{res.Message}"); }
             }
             catch (Exception ex)
             {
                 TShock.Log.Error("[尘歌壶] 保存模板异常: " + ex);
-                p.SendErrorMessage("[尘歌壶] 保存失败: " + ex.Message);
+                Say(p, "[尘歌壶] 保存失败: " + ex.Message);
             }
         });
     }
 
-    /// <summary>/cg templates：列出已保存的区块模板。</summary>
+    /// <summary>/cg templates [页码]：可选建筑模板（[1] 恒为棍母模板=空模板，8 条/页，蓝→紫渐变）。</summary>
     private static void TemplatesCommand(CommandArgs args)
     {
-        TSPlayer? p = args.Player;
-        if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
-        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
+        const int PageSize = 8;
+        List<TemplateEntry> all = BuildTemplateList();
+        int pages = Math.Max(1, (all.Count + PageSize - 1) / PageSize);
+        int page = 1;
+        if (args.Parameters.Count > 1)
+        {
+            if (!int.TryParse(args.Parameters[1], out page) || page < 1) { page = 1; }
+            else if (page > pages) { Say(args.Player, $"[尘歌壶] 只有 {pages} 页"); page = pages; }
+        }
+        page = Math.Clamp(page, 1, pages);
 
-        IReadOnlyList<VirtualWorldTemplateInfo> list = _core.ListRegionTemplates();
-        if (list.Count == 0)
+        PlayerPrefs prefs = args.Player is null ? new PlayerPrefs() : Prefs.Get(OwnerKey(args.Player));
+
+        List<(string text, byte r, byte g, byte b)> rows = [];
+        rows.Add(("当前可选择的建筑模板：", (byte)0x9A, (byte)0xD1, (byte)0xFF));
+        int rowIndex = 0;
+        for (int i = (page - 1) * PageSize; i < Math.Min(all.Count, page * PageSize); i++)
         {
-            p.SendInfoMessage("[尘歌壶] 还没有任何建筑模板。站在壶里盖好房子后 /cg save <名字>。");
-            return;
+            TemplateEntry e = all[i];
+            string name = e.IsBlank ? "棍母模板（空模板，无任何建筑）" : $"{e.Name}（{e.Width}x{e.Height}）";
+            string mark = "";
+            if (!e.Usable) { mark = $"  ⚠ {e.Reason}，不可选"; }
+            else if (string.Equals(e.SelectionKey, prefs.SelectedTemplate, StringComparison.Ordinal)) { mark = "  ← 当前"; }
+            double t = Math.Min(1.0, rowIndex / 7.0);
+            (byte r, byte g, byte b) = PinkToBlue(t);
+            rows.Add(($"[{i + 1}] {name}{mark}", r, g, b));
+            rowIndex++;
         }
-        p.SendInfoMessage($"[尘歌壶] 共 {list.Count} 个建筑模板：");
-        foreach (VirtualWorldTemplateInfo t in list)
+        rows.Add(($"第 {page}/{pages} 页（/cg tpl 页码 翻页，/cg go 序号 进入）", (byte)0x9A, (byte)0x9A, (byte)0xA6));
+
+        int total = 0;
+        foreach ((string text, byte r, byte g, byte b) row in rows) { total += row.text.Length; }
+        total = Math.Max(1, total);
+        int cum = 0;
+        foreach ((string text, byte r, byte g, byte b) row in rows)
         {
-            p.SendInfoMessage(t.Width > 0 ? $"  {t.Name}  （{t.Width}x{t.Height}）" : $"  {t.Name}  （尺寸未知，文件可能损坏）");
+            double t0 = cum / (double)total;
+            cum += row.text.Length;
+            double t1 = cum / (double)total;
+            SendColored(args, row.text, t0, t1);
         }
-        p.SendInfoMessage("[尘歌壶] 用法：/cg paste <名字>（会把活动区域清空后贴上去）");
     }
 
-    /// <summary>/cg paste &lt;名字&gt;：先清空活动区域内部，再把模板【底部对齐地面、水平居中】贴进去（超出部分裁掉）。</summary>
-    private static void PasteCommand(CommandArgs args)
-    {
-        TSPlayer? p = args.Player;
-        if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
-        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
-        if (!_config.AreaEnabled) { p.SendErrorMessage("[尘歌壶] 家园活动区域未启用，无法保证粘贴不越界。"); return; }
-
-        if (args.Parameters.Count < 2)
-        {
-            p.SendInfoMessage("[尘歌壶] 用法：/cg paste <名字>（先在壶里；会清空活动区域再贴）。");
-            return;
-        }
-        string name = args.Parameters[1];
-
-        string key = OwnerKey(p);
-        ServerContext? ctx = FindPotContext(p);
-        if (ctx is null) { p.SendErrorMessage("[尘歌壶] 你要先站在自己的尘歌壶里（/cg 进入）。"); return; }
-
-        VirtualWorldTemplateInfo? info = _core.FindRegionTemplate(name);
-        if (info is null) { p.SendErrorMessage($"[尘歌壶] 找不到模板「{name}」。用 /cg templates 看有哪些。"); return; }
-        if (info.Value.Width <= 0 || info.Value.Height <= 0) { p.SendErrorMessage($"[尘歌壶] 模板「{name}」文件损坏或版本不支持。"); return; }
-
-        int size = AreaSize(key);
-        (int inX0, int inX1, int inY0, int inY1) = AreaInner(ctx, size);
-        (int _, _, _, _, _, int cy) = AreaRect(ctx, size);
-
-        int tw = info.Value.Width, th = info.Value.Height;
-        (int tx, int ty, bool cropped) = ComputePasteOrigin(ctx, size, tw, th);
-        if (cropped)
-        {
-            p.SendInfoMessage($"[尘歌壶] 模板「{name}」（{tw}x{th}）与活动区域（{inX1 - inX0 + 1}x{inY1 - inY0 + 1}）不完全吻合，超出部分会被裁掉。");
-        }
-
-        p.SendInfoMessage($"[尘歌壶] 正在清空活动区域并粘贴「{name}」（{tw}x{th}）…");
-
-        IVirtualWorld? world = _core.Find(key);
-        if (world is null) { p.SendErrorMessage("[尘歌壶] 找不到你的壶实例。"); return; }
-
-        try
-        {
-            ctx.Dispatcher.Post(() =>
-            {
-                try { ClearAreaInterior(ctx, size); }
-                catch (Exception ex) { TShock.Log.Error("[尘歌壶] 粘贴前清空失败: " + ex.Message); }
-            });
-        }
-        catch (Exception ex) { TShock.Log.Error("[尘歌壶] 清空投递失败: " + ex.Message); }
-
-        Task.Run(async () =>
-        {
-            try
-            {
-                int fx = tx, fy = ty;
-                VirtualWorldResult res = await _core.ApplyTemplateAsync(world, name, fx, fy, CancellationToken.None).ConfigureAwait(false);
-                if (!res.Success) { p.SendErrorMessage($"[尘歌壶] 粘贴失败：{res.Message}"); return; }
-
-                ctx.Dispatcher.Post(() =>
-                {
-                    try
-                    {
-                        (int sx, int sy) = ResolveSpawnNear(ctx, size, (inX0 + inX1) / 2, cy);
-                        int oldX = ctx.Main.spawnTileX, oldY = ctx.Main.spawnTileY;
-                        ctx.Main.spawnTileX = sx;
-                        ctx.Main.spawnTileY = sy;
-                        SyncRectToWorld(ctx, inX0, inY0, inX1, inY1);
-                        try { ctx.WorldFile.SaveWorld(resetTime: false, useTemps: false); } catch { }
-                        TShock.Log.Info($"[尘歌壶] 模板「{name}」已贴入: 左上=({fx},{fy}) 尺寸={tw}x{th} 出生点 {oldX},{oldY} -> {sx},{sy}");
-                    }
-                    catch (Exception ex) { TShock.Log.Error("[尘歌壶] 粘贴后处理失败: " + ex.Message); }
-                });
-                p.SendSuccessMessage($"[尘歌壶] 模板「{name}」已贴入活动区域。");
-            }
-            catch (Exception ex)
-            {
-                TShock.Log.Error("[尘歌壶] 粘贴模板异常: " + ex);
-                p.SendErrorMessage("[尘歌壶] 粘贴失败: " + ex.Message);
-            }
-        });
-    }
 
     /// <summary>
-    /// 算出模板贴入点的左上角：**水平居中、底部对齐地板内侧**，并整体夹进活动区域内部。
+    /// 算出模板贴入点的左上角：**水平 + 垂直都居中**（默认放在活动区域中心），并整体夹进活动区域内部。
     /// 返回值 cropped = 是否发生了裁剪（模板比活动区域大）。
     /// ★ 抽成纯函数是为了能脱离客户端直接自测（越界裁剪是这里最容易出错的地方）。
     /// </summary>
     private static (int tx, int ty, bool cropped) ComputePasteOrigin(ServerContext ctx, int size, int tw, int th)
     {
         (int inX0, int inX1, int inY0, int inY1) = AreaInner(ctx, size);
-        (int _, _, _, _, _, int cy) = AreaRect(ctx, size);
 
         int tx = (inX0 + inX1) / 2 - tw / 2;      // 水平居中
-        int ty = (cy - 1) - th + 1;               // 底部对齐地板内侧
+        int ty = (inY0 + inY1) / 2 - th / 2;      // 垂直居中（活动区域中心，不再贴地板）
         bool cropped = tx < inX0 || tx + tw - 1 > inX1 || ty < inY0 || ty + th - 1 > inY1;
 
         // ★ 夹紧：绝不能贴到圈墙上（min 用 inX0/inY0，max 保证右下角不超过 inX1/inY1）
@@ -822,7 +800,8 @@ public sealed class MyPotWorldPlugin : BasePlugin
         (int tx1, int ty1, bool crop1) = ComputePasteOrigin(ctx, size, 20, 10);
         Check(tx1 >= inX0 && tx1 + 20 - 1 <= inX1 && ty1 >= inY0 && ty1 + 10 - 1 <= inY1,
             $"小模板贴入点在内部: 左上=({tx1},{ty1}) 尺寸=20x10（裁剪={crop1}）");
-        Check(ty1 + 10 - 1 == inY1, $"小模板底部对齐地板内侧（底={ty1 + 10 - 1} 期望={inY1}）");
+        int wantCenterY = (inY0 + inY1) / 2;
+        Check(Math.Abs((ty1 + 10) - wantCenterY) <= 1, $"小模板垂直居中（中心={ty1 + 10} 期望≈{wantCenterY}）");
 
         int big = size + 50;
         (int tx2, int ty2, bool crop2) = ComputePasteOrigin(ctx, size, big, big);
@@ -845,6 +824,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
 
     /// <summary>
     /// 清空活动区域内部：所有图格（含墙/漆/液体）、旧箱子、旧标牌、图格实体。
+    /// （/cg paste 已移除；目前无调用方，保留给将来的"整区重贴"用）
     /// **必须在本世界线程上跑。**
     /// </summary>
     private static void ClearAreaInterior(ServerContext ctx, int size)
@@ -882,7 +862,8 @@ public sealed class MyPotWorldPlugin : BasePlugin
         TShock.Log.Info($"[尘歌壶] 活动区域已清空: x=[{x0},{x1}] y=[{y0},{y1}] 图格={cleared}");
     }
 
-    /// <summary>把一片矩形区域的图格变更推给【本世界】玩家（分块发 SendTileRect）。**本世界线程。**</summary>
+    /// <summary>把一片矩形区域的图格变更推给【本世界】玩家（分块发 SendTileRect）。**本世界线程。**
+    /// （/cg paste 已移除；目前无调用方）</summary>
     private static void SyncRectToWorld(ServerContext ctx, int x0, int y0, int x1, int y1)
     {
         const int Chunk = 100;
@@ -922,19 +903,19 @@ public sealed class MyPotWorldPlugin : BasePlugin
         if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
         if (args.Parameters.Count < 2)
         {
-            p.SendInfoMessage("[尘歌壶] 用法：/cg visit <玩家名>（访问他人的尘歌壶）");
+            Say(p, "[尘歌壶] 用法：/cg visit <玩家名>（访问他人的尘歌壶）");
             return;
         }
         if (!p.HasPermission("tshock.admin"))
         {
-            p.SendErrorMessage("[尘歌壶] 你没有访问他人尘歌壶的权限。");
+            Say(p, "[尘歌壶] 你没有访问他人尘歌壶的权限。");
             return;
         }
 
         string want = args.Parameters[1];
         if (string.Equals(want, p.Name, StringComparison.OrdinalIgnoreCase))
         {
-            p.SendInfoMessage("[尘歌壶] 那是你自己的壶，直接用 /cg 即可。");
+            Say(p, "[尘歌壶] 那是你自己的壶，直接用 /cg go 即可。");
             return;
         }
 
@@ -955,12 +936,22 @@ public sealed class MyPotWorldPlugin : BasePlugin
             try { found = Directory.GetFiles(wdir, prefix + "*.wld"); } catch { found = []; }
             if (found.Length == 0)
             {
-                p.SendErrorMessage($"[尘歌壶] 找不到 {want} 的壶（他可能从未创建过）。");
+                Say(p, $"[尘歌壶] 找不到 {want} 的壶（他可能从未创建过）。");
                 return;
             }
-            key = Path.GetFileNameWithoutExtension(found[0]).Substring(prefix.Length);   // = 短键，与 ShortKey 结果一致
+            // ★ 壶的 key 必须是【壶主的真实 key】（acct:<uuid>），不能只用文件名里的短键：
+            //   否则离线访问会用一套全新的 Prefs（区域等级/模板/出生点都对不上），
+            //   而且壶主上线后会以真实 key 再建一个实例 → 同一个世界文件被两个 key 管。
+            string shortKey = Path.GetFileNameWithoutExtension(found[0]).Substring(prefix.Length);
+            string acctUuid = "";
+            try { acctUuid = TShock.UserAccounts.GetUserAccountByName(want)?.UUID ?? ""; } catch { }
+            key = !string.IsNullOrEmpty(acctUuid) ? "acct:" + acctUuid : shortKey;
+            if (string.IsNullOrEmpty(acctUuid))
+            {
+                TShock.Log.Warning($"[尘歌壶] 离线壶主 {want} 没有账号记录，退回短键 {shortKey}（区域等级/模板可能对不上）");
+            }
             ownerName = want;
-            p.SendInfoMessage($"[尘歌壶] {want} 当前不在线，将访问他留下的壶。");
+            Say(p, $"[尘歌壶] {want} 当前不在线，将访问他留下的壶。");
         }
 
         // 若内存里已有同名壶，复用它的 key，避免重复创建
@@ -969,17 +960,18 @@ public sealed class MyPotWorldPlugin : BasePlugin
         if (dup is not null) { key = dup.Key; }
 
         ServerContext? from = UnifiedServerCoordinator.GetClientCurrentlyServer(p.Index);
-        if (from is null) { p.SendErrorMessage("[尘歌壶] 找不到你当前所在的世界。"); return; }
-        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
+        if (from is null) { Say(p, "[尘歌壶] 找不到你当前所在的世界。"); return; }
+        if (_core is null) { Say(p, "[尘歌壶] 核心服务不可用。"); return; }
+        if (!SameSizeAsMainWorld(from, out string sizeWhy)) { Say(p, "[尘歌壶] " + sizeWhy); return; }
 
         Pots.TryGetValue(key, out Pot? pot);
-        if (pot is not null && pot.Busy) { p.SendInfoMessage("[尘歌壶] 对方的壶正在准备中，请稍候…"); return; }
-        if (pot is not null && pot.Destroying) { p.SendInfoMessage("[尘歌壶] 对方的壶正在卸载中，等它完成后会为你重建，请稍候…"); }
+        if (pot is not null && pot.Busy) { Say(p, "[尘歌壶] 对方的壶正在准备中，请稍候…"); return; }
+        if (pot is not null && pot.Destroying) { Say(p, "[尘歌壶] 对方的壶正在卸载中，等它完成后会为你重建，请稍候…"); }
         if (pot is null)
         {
             if (Pots.Values.Count(v => !v.Destroyed) >= Math.Max(1, _config.MaxPots))
             {
-                p.SendErrorMessage($"[尘歌壶] 当前壶数已达上限（{_config.MaxPots}），请稍后再试。");
+                Say(p, $"[尘歌壶] 当前壶数已达上限（{_config.MaxPots}），请稍后再试。");
                 return;
             }
             pot = new Pot { Key = key, OwnerName = ownerName, WorldName = wantWorld, Busy = true, BusySinceMs = NowMs, LastActiveMs = NowMs };
@@ -993,7 +985,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
 
         bool rebuild = _core.Find(key)?.IsLoaded != true;
         int tileW = from.Main.maxTilesX, tileH = from.Main.maxTilesY;
-        p.SendInfoMessage(rebuild
+        Say(p, rebuild
             ? $"[尘歌壶] {ownerName} 的壶已卸载，正在为他重建…"
             : $"[尘歌壶] 正在前往 {ownerName} 的尘歌壶…");
         TShock.Log.Info($"[尘歌壶] {p.Name} 访问 {ownerName} 的壶（重建={rebuild}，{tileW}x{tileH}）");
@@ -1007,7 +999,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 if (!await WaitDestroyAsync(potRef).ConfigureAwait(false))
                 {
                     potRef.Busy = false;
-                    p.SendErrorMessage("[尘歌壶] 对方的壶仍在卸载中，请稍后重试。");
+                    Say(p, "[尘歌壶] 对方的壶仍在卸载中，请稍后重试。");
                     return;
                 }
                 IVirtualWorld world = await EnsurePotAsync(potRef, from).ConfigureAwait(false);
@@ -1017,11 +1009,11 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 potRef.LastActiveMs = NowMs;
                 if (enter.Success)
                 {
-                    p.SendSuccessMessage($"[尘歌壶] 已进入 {ownerNameRef} 的尘歌壶。用 /{"cg"} exit 返回。");
+                    Say(p, $"[尘歌壶] 已进入 {ownerNameRef} 的尘歌壶。用 /{"cg"} exit 返回。");
                 }
                 else
                 {
-                    p.SendErrorMessage($"[尘歌壶] 进入失败：{enter.Message}");
+                    Say(p, $"[尘歌壶] 进入失败：{enter.Message}");
                 }
             }
             catch (Exception ex)
@@ -1029,63 +1021,519 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 potRef.Busy = false;
                 Pots.TryRemove(potRef.Key, out _);
                 TShock.Log.Error("[尘歌壶] 访问流程异常: " + ex);
-                p.SendErrorMessage("[尘歌壶] 准备失败: " + ex.Message);
+                Say(p, "[尘歌壶] 准备失败: " + ex.Message);
             }
         });
     }
 
     private static void Status(CommandArgs args)
     {
-        TSPlayer? p = args.Player;
-        p?.SendInfoMessage($"[尘歌壶] 当前 {Pots.Count}/{_config.MaxPots} 个壶：");
-        foreach (Pot pot in Pots.Values)
-        {
-            IVirtualWorld? w = _core?.Find(pot.Key);
-            bool inside = _core is not null && w is not null && _core.CountLiveOccupants(w) > 0;
-            p?.SendInfoMessage($"  {pot.WorldName} {(inside ? "（有人在里面）" : "（空）")}");
-        }
+        if (_core is null) { Reply(args, "[尘歌壶] 核心服务不可用。", error: true); return; }
 
-        p?.SendInfoMessage($"[尘歌壶] 用法：/{"cg"} 进入 · {"cg"} exit 离开 · {"cg"} status");
+        // ★ 控制台身份（/world/command?world=xxx&cmd=cg status）也要有输出：
+        //   有世界上下文就只报那个壶，没有就报全部（旧实现只对 args.Player 输出，控制台永远空白）。
+        Pot? only = null;
+        if (args.Player is not null) { Pots.TryGetValue(OwnerKey(args.Player), out only); }
+        else if (args.Server is ServerContext sc) { only = FindPotByContext(sc); }
+
+        // ★ 玩家身份只报自己的壶（没有就空列表）；控制台身份才报全部。
+        List<Pot> list = args.Player is not null
+            ? (only is not null ? [only] : [])
+            : (only is not null ? [only] : [.. Pots.Values]);
+        int alive = Pots.Values.Count(v => !v.Destroyed);
+        Reply(args, $"[尘歌壶] 壶 {alive}/{Math.Max(1, _config.MaxPots)} · 闲置 {(_config.IdleDestroySeconds > 0 ? _config.IdleDestroySeconds + "s" : "常驻")} · 自动存 {(_config.SaveIntervalSeconds > 0 ? _config.SaveIntervalSeconds + "s" : "关")}");
+
+        if (list.Count == 0)
+        {
+            Reply(args, args.Player is not null ? "[尘歌壶] 你还没有壶。用 /cg 进入。" : "[尘歌壶] 当前没有任何壶实例。");
+            return;
+        }
+        foreach (Pot pot in list)
+        {
+            foreach (string line in DescribePot(pot)) { Reply(args, line); }
+        }
+        if (args.Player is not null) { Reply(args, "[尘歌壶] 用法：/cg go · /cg exit · /cg info · /cg set"); }
     }
 
-    private static void Enter(CommandArgs args)
+    /// <summary>单个壶的详细状态（多行）。读图格的部分会自动回到该世界线程上取。</summary>
+    private static List<string> DescribePot(Pot pot)
+    {
+        List<string> lines = [];
+        IVirtualWorld? w = _core?.Find(pot.Key);
+        ServerContext? ctx = w?.Context;
+        int level = Prefs.Get(pot.Key).AreaLevel;
+        int size = AreaSize(pot.Key);
+        int occ = w is null ? 0 : (_core?.CountLiveOccupants(w) ?? 0);
+        string state = pot.Destroyed ? "已卸载" : pot.Destroying ? "卸载中" : pot.Busy ? "准备中" : (occ > 0 ? "有人" : "空");
+        PlayerPrefs pref = Prefs.Get(pot.Key);
+        string tplName = string.IsNullOrEmpty(pref.SelectedTemplate) ? "未选择" : (pref.SelectedTemplate == BlankTemplateKey ? "棍母模板（空）" : pref.SelectedTemplate);
+        lines.Add($"  {pot.WorldName}：{state} · 占用 {occ} · 等级 {level}（区域 {size}x{size}）· 模板={tplName}{(pot.Dirty ? " · 有未保存改动" : "")}");
+        if (ctx is null || !ctx.IsRunning) { return lines; }
+
+        (bool got, string detail) = OnWorldThread(ctx, () =>
+        {
+            (int x0, int x1, int y0, int _, int cx, int cy) = AreaRect(ctx, size);
+            (int vx, int vy) = FindVacantSpotFromCenter(ctx, size);
+            int missing = 0;
+            foreach ((int x, int y) in EnumerateAreaWalls(ctx, size))
+            {
+                if (x < 0 || y < 0 || x >= ctx.Main.maxTilesX || y >= ctx.Main.maxTilesY) { missing++; continue; }
+                ref var t = ref ctx.Main.tile[x, y];
+                if (!t.active() || t.type != _config.AreaWallTileId) { missing++; }
+            }
+            string vac = vx == int.MinValue ? "（无空位，回落中心半空）" : $"({vx},{vy})";
+            return $"    世界 {ctx.Name} {ctx.Main.maxTilesX}x{ctx.Main.maxTilesY} · 区域 x=[{x0},{x1}] 天花板Y={y0} 地面Y={cy} 中心X={cx} · 出生点 ({ctx.Main.spawnTileX},{ctx.Main.spawnTileY}) · 回传空位 {vac} · 圈墙缺 {missing} 格";
+        }, 2000);
+        lines.Add(got ? detail : "    （世界线程忙，略过图格细节）");
+        return lines;
+    }
+
+    // ===== /cg spawn：玩家自定义出生点（与越界回传【互不影响】）=====
+
+    // ===== /cg set：壶内设置（spawn / mob / god / msg / sync）=====
+
+    private static void SetCommand(CommandArgs args)
+    {
+        TSPlayer? p = args.Player;
+        if (p is null) { TShock.Log.Info("[尘歌壶] /cg set 需要玩家在自己的壶里执行"); return; }
+        if (_core is null) { Say(p, "[尘歌壶] 核心服务不可用。"); return; }
+
+        string act = args.Parameters.Count > 1 ? args.Parameters[1].ToLowerInvariant() : "";
+        if (act.Length == 0) { SetHelp(p); return; }
+
+        ServerContext? ctx = FindPotContext(p);
+        if (ctx is null) { Say(p, "[尘歌壶] 只能在壶内使用。"); return; }
+
+        switch (act)
+        {
+            case "spawn": SpawnShow(p, ctx); break;
+            case "spawnset": SpawnSet(p, ctx); break;
+            case "spawnclear": SpawnClear(p); break;
+            case "mob": ToggleNoSpawn(args); break;
+            case "god": ToggleGod(args); break;
+            case "msg": ToggleContact(args); break;
+            case "sync": ToggleSync(args); break;
+            default:
+                Say(p, $"[尘歌壶] 未知设置项「{act}」（用 /cg set 查看）");
+                break;
+        }
+    }
+
+    private static void SetHelp(TSPlayer p)
+    {
+        PrintTable(p, "设置项",
+        [
+            ("/cg set spawn", "查看出生点"),
+            ("/cg set spawnset", "把当前位置设为出生点"),
+            ("/cg set spawnclear", "清除自定义出生点"),
+            ("/cg set mob", "壶内禁止自然刷怪"),
+            ("/cg set god", "壶内无敌"),
+            ("/cg set msg", "聊天与主世界互通"),
+            ("/cg set sync", "与主世界同步状态"),
+        ]);
+    }
+
+    private static void SpawnShow(TSPlayer p, ServerContext ctx)
+    {
+        string key = OwnerKey(p);
+        PlayerPrefs prefs = Prefs.Get(key);
+        int size = AreaSize(key);
+        int sx = 0, sy = 0;
+        OnWorldThread(ctx, () => { sx = ctx.Main.spawnTileX; sy = ctx.Main.spawnTileY; return ""; }, 2000);
+        Say(p, $"[尘歌壶] 出生点：{(prefs.HasSpawn ? "自定义" : "自动（进入时在区域内找空地）")}");
+        Say(p, $"[尘歌壶] 当前生效 ({sx},{sy})；活动区域 {size}x{size}。用 /cg set spawnset 把当前位置设为出生点。");
+    }
+
+    private static void SpawnSet(TSPlayer p, ServerContext ctx)
+    {
+        string key = OwnerKey(p);
+        int size = AreaSize(key);
+        bool ok = false; int tx = 0, ty = 0; string why = "";
+        (bool got, string _) = OnWorldThread(ctx, () => { (ok, tx, ty, why) = LocateStandingTile(p, ctx, size); return ""; }, 3000);
+        if (!got) { Say(p, "[尘歌壶] 世界线程忙，稍后再试。"); return; }
+        if (!ok) { Say(p, "[尘歌壶] 现在这个位置不能当出生点：" + why); return; }
+
+        PlayerPrefs prefs = Prefs.Get(key);
+        (int _, int _, int _, int _, int cx, int cy) = AreaRect(ctx, size);
+        prefs.SpawnOffX = tx - cx;
+        prefs.SpawnOffY = ty - cy;
+        Prefs.Save();
+        ctx.Dispatcher.Post(() => { try { ctx.Main.spawnTileX = tx; ctx.Main.spawnTileY = ty; } catch { } });
+        Say(p, $"[尘歌壶] 出生点已设为 ({tx},{ty})（相对区域中心 {prefs.SpawnOffX},{prefs.SpawnOffY}）。");
+        TShock.Log.Info($"[尘歌壶] {p.Name} 设置出生点 ({tx},{ty}) offset=({prefs.SpawnOffX},{prefs.SpawnOffY})");
+    }
+
+    private static void SpawnClear(TSPlayer p)
+    {
+        PlayerPrefs prefs = Prefs.Get(OwnerKey(p));
+        prefs.SpawnOffX = int.MinValue;
+        prefs.SpawnOffY = int.MinValue;
+        Prefs.Save();
+        Say(p, "[尘歌壶] 已清除自定义出生点，恢复自动。");
+    }
+
+    /// <summary>显示宽度：CJK / 全角 = 2 列，ASCII = 1 列（聊天里中文占两格，按字符数补齐必然错位）。</summary>
+    private static int DispWidth(string s)
+    {
+        int w = 0;
+        if (s is null) { return 0; }
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            // ★ '[' / ']' 在聊天里会被换成全角（宽 2 列），排版时必须按 2 列算，否则含 [索引]/[页码] 的行会多出 2 列
+            w += (c < 0x2E80 && c != '[' && c != ']') ? 1 : 2;
+        }
+        return w;
+    }
+
+    /// <summary>两列排版：命令列按显示宽度补空格，描述列起点对齐；标题按整块宽度居中。</summary>
+    private static void PrintTable(TSPlayer? player, string title, (string cmd, string desc)[] rows)
+    {
+        int maxCmd = 0, maxDesc = 0;
+        foreach ((string cmd, string desc) in rows)
+        {
+            maxCmd = Math.Max(maxCmd, DispWidth(cmd));
+            maxDesc = Math.Max(maxDesc, DispWidth(desc));
+        }
+        const string Lead = "  ";
+        const int Gap = 2;
+        int blockW = DispWidth(Lead) + maxCmd + Gap + maxDesc;
+
+        // [i:4080] 是物品图标（八音盒），图标按 2 列估算
+        int titleW = 2 + DispWidth(title) + 2;
+        int pad = Math.Max(0, (blockW - titleW) / 2);
+        Say(player, new string(' ', pad) + "[i:4080]" + title + "[i:4080]");
+
+        foreach ((string cmd, string desc) in rows)
+        {
+            Say(player, Lead + cmd + new string(' ', Math.Max(1, maxCmd - DispWidth(cmd) + Gap)) + desc);
+        }
+    }
+
+    private static void Help(CommandArgs args)
+    {
+        PrintTable(args.Player, "尘歌壶指令",
+        [
+            ("/cg go [索引]", "进入（首次需选模板）"),
+            ("/cg exit", "离开"),
+            ("/cg info", "状态 + 活动区域"),
+            ("/cg info up", "扩大区域"),
+            ("/cg tpl [页码]", "建筑模板列表"),
+            ("/cg tpl save <名>", "保存当前区域为模板"),
+            ("/cg set", "设置项"),
+            ("/cg visit <玩家名>", "访问他人"),
+            ("/cg reset", "重置本壶（需连输两次）"),
+        ]);
+    }
+
+    private static void ResetCommand(CommandArgs args)
+    {
+        TSPlayer? p = args.Player;
+        if (p is null) { TShock.Log.Info("[尘歌壶] /cg reset 需要玩家执行"); return; }
+        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
+        string key = OwnerKey(p);
+
+        long now = NowMs;
+        if (!_resetConfirmed.TryGetValue(key, out long at) || now - at > 60000)
+        {
+            _resetConfirmed[key] = now;
+            Say(p, "[尘歌壶] 这会删除你的壶世界与全部建筑（模板/区域等级/出生点也会清空）。60 秒内再次输入 /cg reset 确认。");
+            return;
+        }
+        _resetConfirmed.TryRemove(key, out _);
+
+        Pots.TryGetValue(key, out Pot? pot);
+        if (pot is not null && (pot.Busy || pot.Resetting))
+        {
+            Say(p, "[尘歌壶] 你的壶正在准备/重置中，请稍候再试。");
+            return;
+        }
+        if (pot is not null) { pot.Resetting = true; }
+
+        Say(p, "[尘歌壶] 正在重置…");
+        TShock.Log.Warning($"[尘歌壶] {p.Name} 开始重置壶（key={key}）");
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                IVirtualWorld? world = _core.Find(key);
+                if (world is not null)
+                {
+                    foreach (int idx in world.Occupants.ToArray())
+                    {
+                        TSPlayer? tp = TShock.Players.ElementAtOrDefault(idx);
+                        if (tp is null || !tp.Active) { continue; }
+                        try { await _core.LeaveAsync(tp, CancellationToken.None).ConfigureAwait(false); } catch { }
+                        Say(tp, tp.Index == p.Index
+                            ? "[尘歌壶] 已重置，正在返回主世界…"
+                            : "[尘歌壶] 壶主重置了尘歌壶，你已被送回原世界。");
+                    }
+
+                    // 玩家刚被移走时世界玩家表可能还没刷新，卸载会以"仍有玩家"为由被拒 -> 重试几次
+                    VirtualWorldResult destroy = VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "未尝试");
+                    for (int i = 0; i < 5; i++)
+                    {
+                        destroy = await _core.DestroyAsync(world, save: false, CancellationToken.None).ConfigureAwait(false);
+                        if (destroy.Success) { break; }
+                        await Task.Delay(400).ConfigureAwait(false);
+                    }
+                    if (!destroy.Success)
+                    {
+                        Say(p, $"[尘歌壶] 重置失败：世界没能卸载（{destroy.Message}）。请稍后重试。");
+                        TShock.Log.Error($"[尘歌壶] 重置失败（世界未卸载）: {destroy.Message}");
+                        return;
+                    }
+                }
+
+                string file = ResolveWorldFile(p.Name, key);
+                try { if (File.Exists(file)) { File.Delete(file); } } catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 删除壶文件失败: " + ex.Message); }
+                try { if (File.Exists(file + ".bak")) { File.Delete(file + ".bak"); } } catch { }
+
+                // ★ 必须确认文件真的没了：否则下次 /cg go 会误判为"壶已存在"
+                if (File.Exists(file))
+                {
+                    Say(p, "[尘歌壶] 重置失败：壶存档文件删不掉（可能仍被占用）。请稍后重试，或关服后手动删除。");
+                    TShock.Log.Error($"[尘歌壶] 重置失败（文件仍在）: {file}");
+                    return;
+                }
+
+                Pots.TryRemove(key, out _);
+                PlayerPrefs prefs = Prefs.Get(key);
+                prefs.SelectedTemplate = "";
+                prefs.AreaBaseSize = 0;
+                prefs.AreaLevel = 0;
+                prefs.SpawnOffX = int.MinValue;
+                prefs.SpawnOffY = int.MinValue;
+                Prefs.Save();
+                TShock.Log.Warning($"[尘歌壶] {p.Name} 重置完成（世界+模板+区域等级+出生点）");
+                Say(p, "[尘歌壶] 重置完成。请用 /cg templates 查看模板，再 /cg go <索引> 重新开始。");
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.Error("[尘歌壶] 重置异常: " + ex);
+                Say(p, "[尘歌壶] 重置失败: " + ex.Message);
+            }
+            finally
+            {
+                if (pot is not null) { pot.Resetting = false; }
+            }
+        });
+    }
+
+    /// <summary>取玩家"脚所在"的图格并校验能不能当出生点（必须在世界线程上调用）。</summary>
+    private static (bool ok, int x, int y, string why) LocateStandingTile(TSPlayer p, ServerContext ctx, int size)
+    {
+        var tp = p.TPlayer;
+        if (tp is null) { return (false, 0, 0, "拿不到玩家实体"); }
+        int x = (int)((tp.position.X + tp.width / 2f) / 16f);
+        int y = (int)((tp.position.Y + tp.height) / 16f) - 1;
+
+        (int inX0, int inX1, int inY0, int inY1) = AreaInner(ctx, size);
+        if (x < inX0 || x > inX1 || y < inY0 || y > inY1) { return (false, x, y, "位置在活动区域之外"); }
+        if (y + 1 >= ctx.Main.maxTilesY) { return (false, x, y, "超出世界边界"); }
+        if (!ctx.Main.tile[x, y + 1].active()) { return (false, x, y, "脚下没有实地"); }
+        for (int dy = 0; dy < 3; dy++)
+        {
+            if (y - dy < 0) { break; }
+            if (ctx.Main.tile[x, y - dy].active()) { return (false, x, y, "身体位置被方块占住"); }
+        }
+        if (ctx.Main.tile[x, y].liquid > 0) { return (false, x, y, "脚下有液体"); }
+        return (true, x, y, "");
+    }
+
+    /// <summary>进壶时把玩家的自定义出生点写进世界（必须在 BuildAreaWalls 之后调用，否则被自动值覆盖）。</summary>
+    private static void ApplyCustomSpawn(ServerContext ctx, string ownerKey)
+    {
+        PlayerPrefs prefs = Prefs.Get(ownerKey);
+        if (!prefs.HasSpawn) { return; }
+
+        int size = AreaSize(ownerKey);
+        (int _, int _, int _, int _, int cx, int cy) = AreaRect(ctx, size);
+        int tx = cx + prefs.SpawnOffX;
+        int ty = cy + prefs.SpawnOffY;
+        (int inX0, int inX1, int inY0, int inY1) = AreaInner(ctx, size);
+        bool inArea = tx >= inX0 && tx <= inX1 && ty >= inY0 && ty <= inY1;
+        if (!inArea || !IsVacantStandingSpot(ctx, tx, ty))
+        {
+            prefs.SpawnOffX = int.MinValue;
+            prefs.SpawnOffY = int.MinValue;
+            Prefs.Save();
+            TShock.Log.Info($"[尘歌壶] 自定义出生点已失效（区域变化或地形改动），恢复自动: ({tx},{ty})");
+            return;
+        }
+        ctx.Main.spawnTileX = tx;
+        ctx.Main.spawnTileY = ty;
+    }
+
+    /// <summary>
+    /// 回复：玩家 → 私聊；控制台/世界控制台 → 走 CommandExecutor（它的世界控制台分支
+    /// 会同时写世界日志与静态 logger）。
+    /// ★ 不用 ExecutorActor：那是 TSServerPlayer，只往控制台窗口写，既进不了 logs 也进不了 REST。
+    /// </summary>
+    private static void Reply(CommandArgs args, string message, bool error = false)
+    {
+        TSPlayer? p = args.Player;
+        try
+        {
+            if (p is not null)
+            {
+                Say(p, message);
+                return;
+            }
+            if (error) { args.Executor.SendErrorMessage(message); } else { args.Executor.SendInfoMessage(message); }
+        }
+        catch { TShock.Log.Info(message); }
+    }
+
+    /// <summary>把一段只读/轻写计算搬到该世界线程上跑（超时返回失败，绝不长时间阻塞）。</summary>
+    private static (bool ok, string text) OnWorldThread(ServerContext ctx, Func<string> work, int timeoutMs)
+    {
+        string text = "";
+        try
+        {
+            if (ctx.Dispatcher.CheckAccess()) { return (true, work()); }
+            Task t = ctx.Dispatcher.InvokeAsync(() =>
+            {
+                try { text = work(); }
+                catch (Exception ex) { text = "  （读取失败: " + ex.Message + "）"; }
+            }, CancellationToken.None);
+            return (t.Wait(timeoutMs), text);
+        }
+        catch (Exception ex) { return (false, "  （读取失败: " + ex.Message + "）"); }
+    }
+
+    // ===== /cg go：选模板 -> 建壶 -> 贴模板 -> 自适应区域 -> 放行 =====
+
+    private static void Go(CommandArgs args)
     {
         TSPlayer? p = args.Player;
         if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
 
         string key = OwnerKey(p);
         ServerContext? from = UnifiedServerCoordinator.GetClientCurrentlyServer(p.Index);
-        if (from is null) { p.SendErrorMessage("[尘歌壶] 找不到你当前所在的世界。"); return; }
-        if (_core is null) { p.SendErrorMessage("[尘歌壶] 核心服务不可用。"); return; }
+        if (from is null) { Say(p, "[尘歌壶] 找不到你当前所在的世界。"); return; }
+        if (_core is null) { Say(p, "[尘歌壶] 核心服务不可用。"); return; }
+        if (!SameSizeAsMainWorld(from, out string sizeWhy)) { Say(p, "[尘歌壶] " + sizeWhy); return; }
 
-        _core.SelfHeal(p.Index);        // 只在"进入"路径自愈，避免误伤 /cg exit
+        _core.SelfHeal(p.Index);
         IVirtualWorld? occ = _core.FindByOccupant(p.Index);
         if (IsMyPot(occ))
         {
-            p.SendInfoMessage("[尘歌壶] 你已经在自己的壶里了。用 /" + "cg" + " exit 返回。");
+            Say(p, "[尘歌壶] 你已经在自己的壶里了。用 /cg exit 返回。");
             return;
         }
         if (occ is not null && !InteropAllows(occ))
         {
-            p.SendInfoMessage($"[尘歌壶] 你当前在「{occ.DisplayName}」里，且本玩法未允许从假世界直接进入；请先退出那里。");
+            Say(p, $"[尘歌壶] 你当前在「{occ.DisplayName}」里，且本玩法未允许从假世界直接进入；请先退出那里。");
             return;
         }
 
         Pots.TryGetValue(key, out Pot? pot);
-        if (pot is not null && pot.Busy)
+        if (pot is not null && pot.Resetting) { Say(p, "[尘歌壶] 你的壶正在重置中，请稍候…"); return; }
+        if (pot is not null && pot.Busy) { Say(p, "[尘歌壶] 你的壶正在准备中，请稍候…"); return; }
+        if (pot is not null && pot.Destroying) { Say(p, "[尘歌壶] 你的壶正在卸载中，等它完成后会为你重建，请稍候…"); }
+
+        PlayerPrefs prefs = Prefs.Get(key);
+        string idxArg = args.Parameters.Count > 1 ? args.Parameters[1].Trim() : "";
+        string worldFile = ResolveWorldFile(p.Name, key);
+        bool worldExists = File.Exists(worldFile);
+
+        // ★ 改名兜底：把旧名字的存档迁到当前名字。
+        //   否则 EnsurePotAsync 会按新名字去找文件 -> 找不到 -> 用种子新建一个【空壶】，等于丢壶。
+        if (worldExists)
         {
-            p.SendInfoMessage("[尘歌壶] 你的壶正在准备中，请稍候…");
-            return;
+            string canonical = WorldFilePath(p.Name, key);
+            if (!string.Equals(worldFile, canonical, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    File.Move(worldFile, canonical, overwrite: false);
+                    worldFile = canonical;
+                    TShock.Log.Info("[尘歌壶] 已把壶存档迁移到当前玩家名: " + Path.GetFileName(canonical));
+                }
+                catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 改名迁移存档失败: " + ex.Message); }
+            }
         }
-        if (pot is not null && pot.Destroying)
+
+        // ★ 旧壶不兼容（beta）：没有"选定模板"记录的已存在壶 -> 自动删除，要求重新选模板
+        if (worldExists && string.IsNullOrEmpty(prefs.SelectedTemplate))
         {
-            p.SendInfoMessage("[尘歌壶] 你的壶正在卸载中，等它完成后会为你重建，请稍候…");
+            IVirtualWorld? oldWorld = _core.Find(key);
+            if (oldWorld is not null && (oldWorld.IsLoaded || _core.CountLiveOccupants(oldWorld) > 0))
+            {
+                Say(p, "[尘歌壶] 检测到旧版本壶（无模板记录），但它正在使用中；请先 /cg reset 再重新选择模板。");
+                return;
+            }
+            try
+            {
+                Pots.TryRemove(key, out _);
+                pot = null;   // ★ 旧壶元数据已丢弃：后面必须重新建（否则 Pots 里查不到，进壶后不被识别成壶）
+                if (File.Exists(worldFile)) { File.Delete(worldFile); }
+                if (File.Exists(worldFile + ".bak")) { File.Delete(worldFile + ".bak"); }
+                TShock.Log.Warning($"[尘歌壶] 旧版本壶已自动删除（无模板记录，beta 不兼容）: {worldFile}");
+                Say(p, "[尘歌壶] 旧版本的壶已自动清除（本版本要求先选模板）。请用 /cg templates 查看后 /cg go <索引>。");
+            }
+            catch (Exception ex)
+            {
+                Say(p, "[尘歌壶] 旧壶清理失败: " + ex.Message);
+                return;
+            }
+            worldExists = false;
         }
+
+        // 只有"还没有壶"时才解析模板；已有的壶直接进
+        TemplateEntry? chosen = null;
+        if (!worldExists)
+        {
+            if (idxArg.Length == 0)
+            {
+                if (string.IsNullOrEmpty(prefs.SelectedTemplate))
+                {
+                    Say(p, "[尘歌壶] 还没有选择模板。请先用 /cg templates 查看，再 /cg go <索引> 选择。");
+                    return;
+                }
+                chosen = FindTemplateBySelection(prefs.SelectedTemplate);
+                if (chosen is null)
+                {
+                    Say(p, $"[尘歌壶] 已记住的模板「{prefs.SelectedTemplate}」不可用（不存在或超限），请重新 /cg templates 选择。");
+                    prefs.SelectedTemplate = "";
+                    prefs.AreaBaseSize = 0;
+                    Prefs.Save();
+                    return;
+                }
+            }
+            else
+            {
+                if (!int.TryParse(idxArg, out int idx) || idx < 1)
+                {
+                    Say(p, "[尘歌壶] 索引无效。用 /cg templates 查看编号后再 /cg go <索引>。");
+                    return;
+                }
+                List<TemplateEntry> all = BuildTemplateList();
+                if (idx > all.Count) { Say(p, $"[尘歌壶] 序号 {idx} 超出范围（共 {all.Count} 项）。"); return; }
+                chosen = all[idx - 1];
+                if (!chosen.Usable)
+                {
+                    Say(p, $"[尘歌壶] 模板「{chosen.Name}」不可用：{chosen.Reason}。请换一个。");
+                    return;
+                }
+                prefs.SelectedTemplate = chosen.SelectionKey;
+                prefs.AreaBaseSize = chosen.IsBlank ? 0 : Math.Max(chosen.Width, chosen.Height) + 10;
+                Prefs.Save();
+            }
+            TShock.Log.Info($"[尘歌壶] {p.Name} 选择模板: {(chosen.IsBlank ? "棍母模板（空）" : chosen.Name)}，区域基础={prefs.AreaBaseSize}");
+        }
+        else if (idxArg.Length > 0)
+        {
+            Say(p, "[尘歌壶] 你的壶已经存在，模板选择不再生效（直接进入）。要换模板请 /cg reset。");
+        }
+
         if (pot is null)
         {
             if (Pots.Values.Count(v => !v.Destroyed) >= Math.Max(1, _config.MaxPots))
             {
-                p.SendErrorMessage($"[尘歌壶] 当前壶数已达上限（{_config.MaxPots}），请稍后再试。");
+                Say(p, $"[尘歌壶] 当前壶数已达上限（{_config.MaxPots}），请稍后再试。");
                 return;
             }
             pot = new Pot { Key = key, OwnerName = p.Name, WorldName = MakeWorldName(p), Busy = true, BusySinceMs = NowMs, LastActiveMs = NowMs };
@@ -1098,10 +1546,12 @@ public sealed class MyPotWorldPlugin : BasePlugin
         }
 
         int tileW = from.Main.maxTilesX, tileH = from.Main.maxTilesY;
-        p.SendInfoMessage("[尘歌壶] 正在为你准备壶中世界…（首次进入需要加载，请稍候）");
-        TShock.Log.Info($"[尘歌壶] {p.Name} 请求进入（世界={pot.WorldName}，{tileW}x{tileH}）");
+        Say(p, chosen is null ? "[尘歌壶] 正在为你准备壶中世界…" : $"[尘歌壶] 正在按模板「{(chosen.IsBlank ? "棍母模板" : chosen.Name)}」准备壶中世界…");
+        TShock.Log.Info($"[尘歌壶] {p.Name} 请求进入（世界={pot.WorldName}，{tileW}x{tileH}，已有壶={worldExists}）");
 
         Pot potRef = pot;
+        bool existedAtStart = worldExists;
+        TemplateEntry? chosenRef = chosen;
         Task.Run(async () =>
         {
             try
@@ -1109,21 +1559,42 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 if (!await WaitDestroyAsync(potRef).ConfigureAwait(false))
                 {
                     potRef.Busy = false;
-                    p.SendErrorMessage("[尘歌壶] 壶仍在卸载中，请稍后重试。");
+                    Say(p, "[尘歌壶] 壶仍在卸载中，请稍后重试。");
                     return;
                 }
                 IVirtualWorld world = await EnsurePotAsync(potRef, from).ConfigureAwait(false);
+
+                // ★ 新建的壶 + 选的是真模板 -> 在放行前贴入（失败就删掉这个空壶，允许换模板重试）
+                if (!existedAtStart && chosenRef is not null && !chosenRef.IsBlank)
+                {
+                    ServerContext? ctx = world.Context;
+                    int size = AreaSize(key);
+                    (int tx, int ty, bool cropped) = ComputePasteOrigin(ctx!, size, chosenRef.Width, chosenRef.Height);
+                    VirtualWorldResult paste = await _core!.ApplyTemplateAsync(world, chosenRef.Name, tx, ty, CancellationToken.None).ConfigureAwait(false);
+                    if (!paste.Success)
+                    {
+                        potRef.Busy = false;
+                        try { await _core.DestroyAsync(world, save: false, CancellationToken.None).ConfigureAwait(false); } catch { }
+                        try { if (File.Exists(worldFile)) { File.Delete(worldFile); } } catch { }
+                        Pots.TryRemove(key, out _);
+                        Say(p, $"[尘歌壶] 模板「{chosenRef.Name}」生成失败（{paste.Message}），已取消进入，请换一个模板。");
+                        TShock.Log.Error($"[尘歌壶] 模板「{chosenRef.Name}」贴入失败，已删除空壶: {paste.Message}");
+                        return;
+                    }
+                    TShock.Log.Info($"[尘歌壶] 模板「{chosenRef.Name}」已生成: 左上=({tx},{ty}) 尺寸={chosenRef.Width}x{chosenRef.Height} 区域={size}x{size} 裁剪={cropped}");
+                }
+
                 VirtualWorldResult enter = await _core!.EnterAsync(p, world, CancellationToken.None).ConfigureAwait(false);
                 potRef.Busy = false;
                 potRef.Destroyed = false;
                 potRef.LastActiveMs = NowMs;
                 if (enter.Success)
                 {
-                    p.SendSuccessMessage($"[尘歌壶] 已进入你的壶中世界（{potRef.WorldName}）。用 /{"cg"} exit 返回。");
+                    Say(p, $"[尘歌壶] 已进入你的壶中世界（{potRef.WorldName}）。用 /cg exit 返回。");
                 }
                 else
                 {
-                    p.SendErrorMessage($"[尘歌壶] 进入失败：{enter.Message}");
+                    Say(p, $"[尘歌壶] 进入失败：{enter.Message}");
                 }
             }
             catch (Exception ex)
@@ -1131,9 +1602,145 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 potRef.Busy = false;
                 Pots.TryRemove(potRef.Key, out _);
                 TShock.Log.Error("[尘歌壶] 进入流程异常: " + ex);
-                p.SendErrorMessage("[尘歌壶] 准备失败: " + ex.Message);
+                Say(p, "[尘歌壶] 准备失败: " + ex.Message);
             }
         });
+    }
+
+    /// <summary>壶世界文件路径（与服务核心同一套命名）。</summary>
+    private static string WorldFilePath(string playerName, string key)
+        => UnifierTSL.Utilities.IO.GetWorldPathFromName(WorldFileName(playerName, key), true);
+
+    /// <summary>
+    /// 定位壶存档：先按 名字+短键 精确找；找不到再按 短键 兜底（玩家改名后文件名会变，否则会"丢壶"）。
+    /// </summary>
+    private static string ResolveWorldFile(string playerName, string key)
+    {
+        string exact = WorldFilePath(playerName, key);
+        try
+        {
+            if (File.Exists(exact)) { return exact; }
+            string? dir = Path.GetDirectoryName(exact);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            {
+                string[] hits = Directory.GetFiles(dir, "尘歌壶_*_" + ShortKey(key) + ".wld");
+                if (hits.Length > 0)
+                {
+                    TShock.Log.Info($"[尘歌壶] 按短键匹配到壶存档（玩家可能改过名）: {Path.GetFileName(hits[0])}");
+                    return hits[0];
+                }
+            }
+        }
+        catch { }
+        return exact;
+    }
+
+    /// <summary>可选建筑模板。[1] 恒为"棍母模板"= 空模板。</summary>
+    private sealed class TemplateEntry
+    {
+        public string Name = "";
+        public string SelectionKey = "";
+        public bool IsBlank;
+        public int Width, Height;
+        public bool Usable = true;
+        public string Reason = "";
+    }
+
+    private static List<TemplateEntry> BuildTemplateList()
+    {
+        List<TemplateEntry> list = [new TemplateEntry { Name = "棍母模板", SelectionKey = BlankTemplateKey, IsBlank = true }];
+        if (_core is null) { return list; }
+        foreach (VirtualWorldTemplateInfo t in _core.ListRegionTemplates())
+        {
+            TemplateEntry e = new() { Name = t.Name, SelectionKey = t.Name, Width = t.Width, Height = t.Height };
+            if (t.Width <= 0 || t.Height <= 0) { e.Usable = false; e.Reason = "文件损坏或版本不支持"; }
+            else if (t.Width > MaxTemplateWidth || t.Height > MaxTemplateHeight)
+            {
+                e.Usable = false;
+                e.Reason = $"尺寸 {t.Width}x{t.Height} 超过上限 {MaxTemplateWidth}x{MaxTemplateHeight}";
+            }
+            list.Add(e);
+        }
+        return list;
+    }
+
+    private static TemplateEntry? FindTemplateBySelection(string key)
+    {
+        if (key == BlankTemplateKey) { return new TemplateEntry { Name = "棍母模板", SelectionKey = BlankTemplateKey, IsBlank = true }; }
+        foreach (VirtualWorldTemplateInfo t in _core?.ListRegionTemplates() ?? [])
+        {
+            if (!string.Equals(t.Name, key, StringComparison.Ordinal)) { continue; }
+            if (t.Width <= 0 || t.Height <= 0 || t.Width > MaxTemplateWidth || t.Height > MaxTemplateHeight) { return null; }
+            return new TemplateEntry { Name = t.Name, SelectionKey = t.Name, Width = t.Width, Height = t.Height };
+        }
+        return null;
+    }
+
+    /// <summary>粉 (#FF6FB5) -> 浅蓝 (#8FD8FF) 的线性插值（所有回复文字的渐变色）。</summary>
+    private static (byte r, byte g, byte b) PinkToBlue(double t)
+    {
+        t = Math.Clamp(t, 0, 1);
+        static byte Lerp(int a, int b, double k) => (byte)Math.Clamp((int)Math.Round(a + (b - a) * k), 0, 255);
+        return (Lerp(0xFF, 0x8F, t), Lerp(0x6F, 0xD8, t), Lerp(0xB5, 0xFF, t));
+    }
+
+    /// <summary>
+    /// 发给玩家的所有文字统一走这里：整行逐字渐变（粉 -> 浅蓝），用客户端解析的 [c/...] 标签。
+    /// 控制台身份没有渐变（写日志）。
+    /// </summary>
+    private static void Say(TSPlayer? p, string message)
+    {
+        if (p is null) { TShock.Log.Info(message); return; }
+        try { p.SendMessage(GradientTagged(message, 0, 1), 255, 255, 255); }
+        catch { TShock.Log.Info(message); }
+    }
+
+    /// <summary>
+    /// 发送带渐变的一行：用客户端解析的 [c/RRGGBB:文字] 标签逐字染色。
+    /// ★ 不要用 SendMessage(msg,r,g,b) 的 color 参数 —— 实测这套客户端不采纳，仍显示默认黄色；
+    ///   TShock 自己的欢迎语也是走 [c/...] 标签（FileTools.cs:32）。
+    /// </summary>
+    private static void SendColored(CommandArgs args, string text, double t0, double t1)
+    {
+        TSPlayer? p = args.Player;
+        try
+        {
+            if (p is not null) { p.SendMessage(GradientTagged(text, t0, t1), 255, 255, 255); return; }
+            TShock.Log.Info(text);   // 控制台没有渐变（只影响游戏内聊天）
+        }
+        catch { TShock.Log.Info(text); }
+    }
+
+    /// <summary>把一行文字逐字包成 [c/RRGGBB:x]；标题里出现的 ']' 必须裸着输出（否则标签会被提前截断）。</summary>
+    private static string GradientTagged(string text, double t0, double t1)
+    {
+        if (string.IsNullOrEmpty(text)) { return text; }
+        int n = Math.Max(1, text.Length - 1);
+        System.Text.StringBuilder sb = new(text.Length * 18);
+        for (int i = 0; i < text.Length; i++)
+        {
+            // ★ [i:4080] / [c/...] / [n:...] 这类真标签原样放行，否则会被全角化而失效
+            if (text[i] == '[')
+            {
+                int close = text.IndexOf(']', i + 1);
+                bool isTag = close > i + 2
+                    && (text[i + 1] == 'i' || text[i + 1] == 'c' || text[i + 1] == 'n')
+                    && (text[i + 2] == ':' || text[i + 2] == '/');
+                if (isTag)
+                {
+                    sb.Append(text, i, close - i + 1);
+                    i = close;
+                    continue;
+                }
+            }
+            // ★ ASCII 的 ']' 是颜色标签的终止符，放进标签会被截断；换成同形全角方括号，既能染色又不破坏标签
+            char ch = text[i];
+            if (ch == '[') { ch = '［'; }
+            else if (ch == ']') { ch = '］'; }
+            (byte r, byte g, byte b) = PinkToBlue(t0 + (t1 - t0) * (i / (double)n));
+            sb.Append("[c/").Append(r.ToString("X2")).Append(g.ToString("X2")).Append(b.ToString("X2")).Append(':').Append(ch).Append(']');
+        }
+        return sb.ToString();
     }
 
     private static void Leave(CommandArgs args)
@@ -1144,25 +1751,25 @@ public sealed class MyPotWorldPlugin : BasePlugin
         IVirtualWorld? occ = _core.FindByOccupant(p.Index);
         if (!IsMyPot(occ))
         {
-            p.SendInfoMessage(occ is null
+            Say(p, occ is null
                 ? "[尘歌壶] 你当前不在壶里。"
                 : $"[尘歌壶] 你当前不在壶里（在「{occ.DisplayName}」）。");
             return;
         }
 
-        p.SendInfoMessage("[尘歌壶] 正在返回…");
+        Say(p, "[尘歌壶] 正在返回…");
         Task.Run(async () =>
         {
             try
             {
                 VirtualWorldResult leave = await _core.LeaveAsync(p, CancellationToken.None).ConfigureAwait(false);
-                if (leave.Success) { p.SendSuccessMessage("[尘歌壶] 已返回原世界。"); }
-                else { p.SendErrorMessage($"[尘歌壶] 返回失败：{leave.Message}"); }
+                if (leave.Success) { Say(p, "[尘歌壶] 已返回原世界。"); }
+                else { Say(p, $"[尘歌壶] 返回失败：{leave.Message}"); }
             }
             catch (Exception ex)
             {
                 TShock.Log.Error("[尘歌壶] 返回失败: " + ex);
-                p.SendErrorMessage("[尘歌壶] 返回失败: " + ex.Message);
+                Say(p, "[尘歌壶] 返回失败: " + ex.Message);
             }
         });
     }
@@ -1258,7 +1865,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
                     if (iv > 0 && pot.Dirty && now - pot.LastSaveMs >= iv * 1000L)
                     {
                         pot.LastSaveMs = now;
-                        if (SavePot(world, "定时")) { pot.Dirty = false; }
+                        SavePot(world, "定时", pot);
                     }
                     continue;
                 }
@@ -1296,9 +1903,13 @@ public sealed class MyPotWorldPlugin : BasePlugin
     private static int AreaSize(string ownerKey)
     {
         int[] sizes = _config.AreaSizes ?? [];
-        if (sizes.Length == 0) { return 150; }
-        int level = Math.Clamp(Prefs.Get(ownerKey).AreaLevel, 0, sizes.Length - 1);
-        return Math.Max(8, sizes[level]);
+        PlayerPrefs prefs = Prefs.Get(ownerKey);
+        int levelSize = sizes.Length == 0
+            ? 150
+            : Math.Max(8, sizes[Math.Clamp(prefs.AreaLevel, 0, sizes.Length - 1)]);
+        // ★ 模板撑开的区域：160x160 的模板 -> 170x170（模板最大边 + 余量），且不会被等级尺寸压回去
+        int baseSize = Math.Max(0, prefs.AreaBaseSize);
+        return Math.Max(levelSize, baseSize);
     }
 
     /// <summary>
@@ -1498,7 +2109,19 @@ public sealed class MyPotWorldPlugin : BasePlugin
 
             if (_config.AreaEnabled && _core.Find(pot.Key)?.Occupants.Count > 0)
             {
-                EnforceArea(ctx, AreaSize(pot.Key));
+                int size = AreaSize(pot.Key);
+                // ★ 圈墙校验/修复按「家园_活动区域_检查间隔毫秒」节流：这个配置以前根本没被用到，
+                //   而这里原来是【每世界每帧】扫整圈墙（size=420 时约 1680 格/帧）。
+                //   破坏/放块本身已被 TileChange 拦截即时取消，所以 300ms 一次的兜底足够。
+                int iv = Math.Clamp(_config.AreaCheckIntervalMs, 50, 5000);
+                long now = NowMs;
+                if (now - pot.LastAreaCheckMs >= iv)
+                {
+                    pot.LastAreaCheckMs = now;
+                    VerifyAndRepairWalls(ctx, size);
+                }
+                // ★ 越界回传仍【每帧】：这是手感，不能跟着节流。
+                EnforceOverrun(ctx, size);
             }
         }
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 壶内检查异常: " + ex.Message); }
@@ -1600,13 +2223,14 @@ public sealed class MyPotWorldPlugin : BasePlugin
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 圈墙拦截异常: " + ex.Message); }
     }
 
-    /// <summary>越界立即回传 + 圈墙立即修复。★ 必须在本世界线程上跑。</summary>
-    private static void EnforceArea(ServerContext ctx, int size)
+    /// <summary>
+    /// 越界立即回传（每帧跑，不跟圈墙校验节流）。
+    /// 落点：从活动区域【中心】向外找最近的"可站立空位"；找不到才回落到原来的 (cx, cy - size/2)。
+    /// ★ 这条链与玩家的自定义出生点【互不影响】；也【不再给玩家发提示】（只记服务端日志）。
+    /// </summary>
+    private static void EnforceOverrun(ServerContext ctx, int size)
     {
-        VerifyAndRepairWalls(ctx, size);
-
         (int minX, int maxX, int minY, int maxY, int cx, int cy) = AreaRect(ctx, size);
-        int landY = cy - size / 2;      // ★ 回传到"出生点/区域中心"，与 #3 一致（不再用回传落点偏移）
 
         for (int i = 0; i < ctx.Main.player.Length; i++)
         {
@@ -1617,23 +2241,77 @@ public sealed class MyPotWorldPlugin : BasePlugin
             int py = (int)(pl.position.Y / 16f);
             if (px >= minX && px <= maxX && py >= minY && py <= maxY) { continue; }
 
+            (int rx, int ry) = FindVacantSpotFromCenter(ctx, size);
+            if (rx == int.MinValue) { rx = cx; ry = cy - size / 2; }
+
             TSPlayer? tp = TShock.Players.ElementAtOrDefault(pl.whoAmI);
             // ★ 必须用 TSPlayer.Teleport：它内部会 CheckSection + 发 65 号 Teleport 包；
             //   只发 13 号 PlayerUpdate 客户端不认（这就是"日志说回传了、人没动"的原因）
             if (tp is not null)
             {
-                try { tp.Teleport(cx * 16f, landY * 16f); } catch { }
+                try { tp.Teleport(rx * 16f, ry * 16f); } catch { }
             }
             else
             {
-                pl.position.X = cx * 16f;
-                pl.position.Y = landY * 16f;
+                pl.position.X = rx * 16f;
+                pl.position.Y = ry * 16f;
                 pl.velocity.X = 0f;
                 pl.velocity.Y = 0f;
             }
-            tp?.SendInfoMessage($"[尘歌壶] 你已走出家园活动范围（{size}x{size}），已被送回中心。");
-            TShock.Log.Info($"[尘歌壶] 活动区域：{tp?.Name ?? "?"} 越界({px},{py})，已回传中心");
+            TShock.Log.Info($"[尘歌壶] 活动区域：{tp?.Name ?? "?"} 越界({px},{py}) -> 回传空位({rx},{ry})");
         }
+    }
+
+    /// <summary>
+    /// 从活动区域中心向外，按「|dx| 由近到远、每列 |dy| 由近到远」找最近的可站立空位。
+    /// 返回【脚所在图格】；找不到返回 (int.MinValue, int.MinValue)。
+    /// 这个顺序等价于"离中心最近"，但比整圈扫描快得多（常见情况第一列就能落到地面）。
+    /// ★ 纯读取，必须在本世界线程上跑。
+    /// </summary>
+    private static (int x, int y) FindVacantSpotFromCenter(ServerContext ctx, int size)
+    {
+        (int inX0, int inX1, int inY0, int inY1) = AreaInner(ctx, size);
+        int cx = (inX0 + inX1) / 2;
+        int cy = (inY0 + inY1) / 2;
+        int maxR = Math.Max(inX1 - inX0, inY1 - inY0) + 1;
+        int maxK = Math.Max(cy - inY0, inY1 - cy);
+
+        for (int r = 0; r <= maxR; r++)
+        {
+            for (int s = 0; s < 2; s++)
+            {
+                if (r == 0 && s == 1) { continue; }
+                int x = cx + (s == 0 ? r : -r);
+                if (x < inX0 || x > inX1) { continue; }
+
+                for (int k = 0; k <= maxK; k++)
+                {
+                    if (cy - k >= inY0 && IsVacantStandingSpot(ctx, x, cy - k)) { return (x, cy - k); }
+                    if (k != 0 && cy + k <= inY1 && IsVacantStandingSpot(ctx, x, cy + k)) { return (x, cy + k); }
+                }
+            }
+        }
+        return (int.MinValue, int.MinValue);
+    }
+
+    /// <summary>
+    /// (x,y) 作为"脚的位置"是否可站：3 宽 x 4 高（y-3..y）内无实心图格、无液体，且 y+1 是实心。
+    /// 允许背景墙（房子内部也应该能站）。
+    /// </summary>
+    private static bool IsVacantStandingSpot(ServerContext ctx, int x, int y)
+    {
+        int w = ctx.Main.maxTilesX, h = ctx.Main.maxTilesY;
+        if (x - 1 < 1 || x + 1 >= w - 1 || y - 3 < 1 || y + 1 >= h - 1) { return false; }
+        if (!ctx.Main.tile[x, y + 1].active()) { return false; }
+        for (int yy = y - 3; yy <= y; yy++)
+        {
+            for (int xx = x - 1; xx <= x + 1; xx++)
+            {
+                ref var t = ref ctx.Main.tile[xx, yy];
+                if (t.active() || t.liquid > 0) { return false; }
+            }
+        }
+        return true;
     }
 
     /// <summary>该格是否严格位于活动区域【内部】（内部才允许动土；边界与外边一律禁止）。</summary>
@@ -1681,15 +2359,6 @@ public sealed class MyPotWorldPlugin : BasePlugin
         catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 液体拦截异常: " + ex.Message); }
     }
 
-    /// <summary>该格是否位于活动区域边界（地板/天花板的整行，或左右竖墙）。</summary>
-    private static bool IsOnAreaBoundary(ServerContext ctx, int size, int x, int y)
-    {
-        (int minX, int maxX, int minY, _, _, int cy) = AreaRect(ctx, size);
-        if (x < minX || x > maxX) { return false; }
-        if (y == cy || y == minY) { return true; }
-        return (x == minX || x == maxX) && y >= minY && y < cy;
-    }
-
     /// <summary>把图格变更同步给【本世界】的玩家（不能发给别的世界）。</summary>
     private static void SyncTilesToWorld(ServerContext ctx, IEnumerable<(int x, int y)> tiles)
     {
@@ -1734,6 +2403,9 @@ public sealed class MyPotWorldPlugin : BasePlugin
         TSPlayer? p = args.Player;
         if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
 
+        ServerContext? potCtx = FindPotContext(p);
+        if (potCtx is null) { Say(p, "[尘歌壶] 只能在壶内使用。"); return; }
+
         string act = args.Parameters.Count > 1 ? args.Parameters[1].ToLowerInvariant() : "show";
         string key = OwnerKey(p);
         var prefs = Prefs.Get(key);
@@ -1744,7 +2416,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
         {
             if (prefs.AreaLevel >= maxLevel)
             {
-                p.SendInfoMessage($"[尘歌壶] 活动区域已是最大（{size}x{size}）。");
+                Say(p, $"[尘歌壶] 活动区域已是最大（{size}x{size}）。");
                 return;
             }
 
@@ -1760,7 +2432,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 }
                 if (have < need)
                 {
-                    p.SendErrorMessage($"[尘歌壶] 扩建需要 {need} 个（物品ID {_config.AreaUpgradeItemId}），你只有 {have} 个。");
+                    Say(p, $"[尘歌壶] 扩建需要 {need} 个（物品ID {_config.AreaUpgradeItemId}），你只有 {have} 个。");
                     return;
                 }
                 ConsumeItems(p, _config.AreaUpgradeItemId, need);
@@ -1769,7 +2441,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             prefs.AreaLevel++;
             Prefs.Save();
             int newSize = AreaSize(key);
-            p.SendSuccessMessage($"[尘歌壶] 活动区域已扩大到 {newSize}x{newSize}（等级 {prefs.AreaLevel}）{(need > 0 ? $"，消耗 {need} 个" : "")}。");
+            Say(p, $"[尘歌壶] 活动区域已扩大到 {newSize}x{newSize}（等级 {prefs.AreaLevel}）{(need > 0 ? $"，消耗 {need} 个" : "")}。");
             TShock.Log.Info($"[尘歌壶] {p.Name} 活动区域升级 -> 等级={prefs.AreaLevel} 边长={newSize} 消耗={need}x{_config.AreaUpgradeItemId}");
 
             // 壶已加载就立刻重铺（否则下次进入生效）
@@ -1795,7 +2467,10 @@ public sealed class MyPotWorldPlugin : BasePlugin
             return;
         }
 
-        p.SendInfoMessage($"[尘歌壶] 家园活动区域：{(_config.AreaEnabled ? "已启用" : "已关闭")}；当前 {size}x{size}，等级 {prefs.AreaLevel}/{maxLevel}。用 /{"cg"} area upgrade 扩大。");
+        (int _, int _, int floorTopY, int _, int _, int floorY) = AreaRect(potCtx, size);
+        string tpl = string.IsNullOrEmpty(prefs.SelectedTemplate) ? "未选择" : (prefs.SelectedTemplate == BlankTemplateKey ? "棍母模板（空）" : prefs.SelectedTemplate);
+        Say(p, $"[尘歌壶] 家园活动区域：{(_config.AreaEnabled ? "已启用" : "已关闭")}；当前 {size}x{size}，等级 {prefs.AreaLevel}/{maxLevel}，地面Y={floorY} 天花板Y={floorTopY}，模板={tpl}。");
+        Say(p, "[尘歌壶] 用 /cg area upgrade 扩大；用 /cg reset 重置本壶（需连输两次）。");
     }
 
     /// <summary>从玩家背包扣除指定物品（调用前必须已确认数量足够）。</summary>

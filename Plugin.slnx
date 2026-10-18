@@ -21,5 +21,6 @@
   <Project Path="src/RuYouMusic/RuYouMusic.csproj" />
   <Project Path="src/VirtualWorldCore.Abstractions/VirtualWorldCore.Abstractions.csproj" />
   <Project Path="src/VirtualWorldCore/VirtualWorldCore.csproj" />
+  <Project Path="src/WorldChainSync/WorldChainSync.csproj" />
   <Project Path="src/WorldCommandChannel/WorldCommandChannel.csproj" />
 </Solution>

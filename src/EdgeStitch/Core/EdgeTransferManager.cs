@@ -44,32 +44,13 @@ public sealed class EdgeTransferManager
     public EdgeStitchConfig Config { get; set; } = new();
 
     /// <summary>每个世界每 tick 调用一次（Game.PostUpdate 在 UTSL 是按世界触发的）。</summary>
-    private long _lastUnify;
-
     public void OnPostUpdate(ServerContext server)
     {
         FinishPending();
 
-        // 周期性把世界级状态（时间/天气/世界进度）统一到链上其它世界，
-        // 否则各世界各自推进时间，会越走越不一样。
-        if (Environment.TickCount64 - _lastUnify >= 2000)
-        {
-            _lastUnify = Environment.TickCount64;
-            List<ServerContext> chainWorlds = [];
-            foreach (string name in Config.WorldChain)
-            {
-                ServerContext? w = ResolveNeighbor(Config.WorldChain, IndexOf(name));
-                if (w is not null)
-                {
-                    chainWorlds.Add(w);
-                }
-            }
-            if (chainWorlds.Count >= 2)
-            {
-                WorldStateSync.UnifyChain(chainWorlds);
-            }
-        }
+        if (!Config.Enabled) { return; }
 
+        // 注：世界级状态同步已拆到独立插件 WorldChainSync（同步类），本插件只做换乘。
         List<string> chain = Config.WorldChain;
         if (chain.Count < 2)
         {
@@ -128,7 +109,7 @@ public sealed class EdgeTransferManager
             float nearPx = 150 * TilePx;
             if (player.position.X <= nearPx || player.position.X >= worldRightPx - nearPx)
             {
-                if (Environment.TickCount64 - _lastDebug >= 1000)
+                if (Config.DiagnosticLog && Environment.TickCount64 - _lastDebug >= Math.Max(500, Config.DiagnosticIntervalMs))
                 {
                     _lastDebug = Environment.TickCount64;
                     TShock.Log.Info($"[EdgeStitch][DBG] {player.name} x={player.position.X:F0}({player.position.X / TilePx:F0}格) "
@@ -271,17 +252,17 @@ public sealed class EdgeTransferManager
                 return $"脚下={(foot.active() ? "实心" : "空")} 身体={(body.active() ? "实心" : "空")} 头={(head.active() ? "实心" : "空")}";
             }
 
+            if (Config.TransferLog)
+            {
             TShock.Log.Info("[EdgeStitch] " + player.name + " " + server.Name + "→" + target.Name + "（" + direction + "）"
                 + " 源格 x=" + (player.position.X / TilePx).ToString("F0")
                 + " 目标格 x=" + (targetX / TilePx).ToString("F0")
                 + " 落点=" + spawnX + "," + spawnY
                 + " | " + Terrain(spawnX, spawnY));
+            }
 
-            // ★ 换乘前把【源世界】的世界级状态拷给目标世界：
-            //   时间、天气、世界进度（Boss 旗标等）随之过去。
-            //   玩家自身（buff/debuff/血量/背包）不用管 —— UTSL 迁移的是同一个 Player 对象。
-            WorldStateSync.CopyWorldState(server, target);
-
+            // ★ 世界级状态（时间/天气/进度）的同步由独立插件 WorldChainSync 负责：
+            //   它会检测到玩家所在世界变化，把旧世界状态拷到新世界。
             UnifiedServerCoordinator.TransferPlayerToServer((byte)who, target);
 
             // player.Spawn() 是同步调用，上面两个值已经用完，立刻还原
@@ -491,4 +472,95 @@ public sealed class EdgeTransferManager
         _lastWarn[key] = now;
         TShock.Log.Warning(message);
     }
+
+    // ===== 运维面（/stitch status / reload）=====
+
+    /// <summary>当前状态：链、每个世界的尺寸/在线数/陆地边缘、日志开关。</summary>
+    public List<string> Describe()
+    {
+        List<string> lines = [];
+        lines.Add($"世界链: {string.Join(" — ", Config.WorldChain)}（环={(Config.Loop ? "是" : "否")}，启用={(Config.Enabled ? "是" : "否")}）");
+        lines.Add($"冷却 {Config.CooldownMs}ms · 边缘带 {Config.EdgeBandTiles} · 触发余量 {Config.TriggerMarginTiles} · 切片间距 {Config.SliceDeltaTiles}");
+        foreach (string name in Config.WorldChain)
+        {
+            ServerContext? w = Find(name);
+            if (w is null) { lines.Add($"  {name}: 未运行"); continue; }
+            WorldLandEdges? e = Config.Resolve(name);
+            int online = w.Main.player.Count(p => p is not null && p.active);
+            lines.Add($"  {name}: {w.Main.maxTilesX}x{w.Main.maxTilesY} 在线 {online} 西={e?.West?.ToString() ?? "-"} 东={e?.East?.ToString() ?? "-"}");
+        }
+        lines.Add($"换乘日志={(Config.TransferLog ? "开" : "关")} · 诊断日志={(Config.DiagnosticLog ? "开" : "关")}（{Config.DiagnosticIntervalMs}ms）");
+        return lines;
+    }
+
+    /// <summary>
+    /// 配置自检。
+    /// includeRuntime=false 只做静态检查（链数量/重复/数值/链外陆缘）——插件初始化时世界还没启动，不能用运行期检查。
+    /// </summary>
+    public List<string> Validate(bool includeRuntime = true)
+    {
+        List<string> warns = [];
+        List<string> chain = Config.WorldChain;
+        if (chain.Count < 2) { warns.Add("世界链少于 2 个世界，换乘不会触发"); }
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in chain)
+        {
+            if (!seen.Add(name)) { warns.Add($"世界链里重复出现 '{name}'"); }
+        }
+
+        foreach (string key in Config.LandEdges.Keys)
+        {
+            if (!chain.Exists(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase)))
+            {
+                warns.Add($"陆地边缘里有链外世界 '{key}'（不会生效）");
+            }
+        }
+
+        if (Config.CooldownMs < 0) { warns.Add("传送冷却_毫秒 不能为负"); }
+        if (Config.TriggerMarginTiles < 0) { warns.Add("边缘触发余量_格 不能为负"); }
+        if (Config.SliceDeltaTiles < 0) { warns.Add("切片间距_格 不能为负"); }
+        if (Config.EdgeBandTiles <= 0) { warns.Add("边缘带宽度_格 必须大于 0"); }
+        if (Config.DiagnosticIntervalMs < 500) { warns.Add("诊断间隔_毫秒 建议 >= 500"); }
+
+        if (!includeRuntime) { return warns; }
+
+        for (int i = 0; i < chain.Count; i++)
+        {
+            ServerContext? w = Find(chain[i]);
+            if (w is null)
+            {
+                warns.Add($"链内世界 '{chain[i]}' 未运行（名字要与 autoStartServers.name 一致）");
+                continue;
+            }
+            if (i > 0)
+            {
+                ServerContext? prev = Find(chain[i - 1]);
+                if (prev is not null && (prev.Main.maxTilesX != w.Main.maxTilesX || prev.Main.maxTilesY != w.Main.maxTilesY))
+                {
+                    warns.Add($"'{chain[i - 1]}'({prev.Main.maxTilesX}x{prev.Main.maxTilesY}) 与 '{chain[i]}'({w.Main.maxTilesX}x{w.Main.maxTilesY}) 尺寸不同，接缝会被跳过");
+                }
+            }
+            WorldLandEdges? e = Config.Resolve(chain[i]);
+            if (e?.West is int west && (west < 0 || west >= w.Main.maxTilesX)) { warns.Add($"'{chain[i]}' 的西陆缘 {west} 越界"); }
+            if (e?.East is int east && (east < 0 || east >= w.Main.maxTilesX)) { warns.Add($"'{chain[i]}' 的东陆缘 {east} 越界"); }
+        }
+
+        if (Config.Loop && chain.Count >= 2)
+        {
+            ServerContext? first = Find(chain[0]);
+            ServerContext? last = Find(chain[^1]);
+            if (first is not null && last is not null
+                && (first.Main.maxTilesX != last.Main.maxTilesX || first.Main.maxTilesY != last.Main.maxTilesY))
+            {
+                warns.Add($"（环）'{chain[^1]}' 与 '{chain[0]}' 尺寸不同，环接缝会被跳过");
+            }
+        }
+
+        return warns;
+    }
+
+    /// <summary>按名字找正在运行的世界。</summary>
+    private ServerContext? Find(string name)
+        => UnifiedServerCoordinator.Servers.FirstOrDefault(x => x.IsRunning && string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
 }

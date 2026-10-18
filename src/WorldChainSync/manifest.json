@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "世界链状态同步：时间/天气/Boss 进度在链内世界保持一致，换乘瞬间同步"
+  },
+  "README.en-US": {
+    "Description": "World chain state sync: keeps time, weather and boss progress consistent across chained worlds"
+  }
+}

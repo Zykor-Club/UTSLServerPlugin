@@ -15,7 +15,7 @@ public sealed class MyPotWorldConfig
 
     /// <summary>壶里没人多久（秒）后自动存档并销毁；0 = 不自动销毁。</summary>
     [JsonPropertyName("闲置销毁_秒")]
-    public int IdleDestroySeconds { get; set; } = 600;
+    public int IdleDestroySeconds { get; set; } = 300;
 
     /// <summary>
     /// 壶里有玩家时，每隔多少秒自动落盘一次（0 = 关闭定时保存）。

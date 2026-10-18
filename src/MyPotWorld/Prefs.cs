@@ -23,6 +23,21 @@ public sealed class PlayerPrefs
     /// 空 = 用默认 pot_blank。建房请用 /cg save + /cg paste（区块模板），这个只影响"新壶初始内容"。
     /// </summary>
     [JsonPropertyName("模板")] public string Template { get; set; } = "";
+
+    /// <summary>
+    /// 自定义出生点：相对【活动区域中心】的图格偏移；int.MinValue = 未设置（默认）。
+    /// ★ 存偏移而不是绝对坐标：区域升级扩大后不会突然落到圈墙外面。
+    /// </summary>
+    [JsonPropertyName("出生点_X")] public int SpawnOffX { get; set; } = int.MinValue;
+    [JsonPropertyName("出生点_Y")] public int SpawnOffY { get; set; } = int.MinValue;
+
+    [JsonIgnore] public bool HasSpawn => SpawnOffX != int.MinValue && SpawnOffY != int.MinValue;
+
+    /// <summary>已选定的建筑模板名；空 = 未选择，"__blank__" = 棍母模板（空模板，无任何建筑）。</summary>
+    [JsonPropertyName("选定模板")] public string SelectedTemplate { get; set; } = "";
+
+    /// <summary>由模板撑开的区域基础边长（0 = 未设置）；实际区域 = max(等级尺寸, 该值)。</summary>
+    [JsonPropertyName("区域基础尺寸")] public int AreaBaseSize { get; set; }
 }
 
 public static class Prefs
