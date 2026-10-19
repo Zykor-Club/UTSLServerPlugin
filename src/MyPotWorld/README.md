@@ -1,6 +1,6 @@
 # MyPotWorld 尘歌壶
 - **作者**: 星梦
-- **版本**: v0.6.2
+- **版本**: v0.7.0
 
 ## 功能概述
 - 每个玩家一个**隔离的私人世界**（按 UUID 持久化，销毁后重进仍是自己的那个壶）
@@ -14,23 +14,27 @@
 ## 指令
 | 语法 | 权限 | 说明 |
 |------|:----:|------|
-| `/cg` | - | 帮助（只列顶层指令，不列别名） |
-| `/cg go [序号]` | - | 进入壶世界；首次必须先选模板 |
-| `/cg exit` | - | 离开并返回来源世界 |
-| `/cg info` | - | 壶状态 + 活动区域（控制台/REST 亦可读） |
-| `/cg info up` | - | 扩大活动区域一级（需在壶内） |
-| `/cg tpl [页码]` | - | 建筑模板列表（[1] 棍母模板＝空模板，8 条/页） |
-| `/cg tpl save <名字>` | - | 把当前活动区域存成模板（需在壶内） |
-| `/cg visit <玩家名>` | `tshock.admin` | 访问他人的壶 |
-| `/cg reset` | - | 重置本壶（连输两次确认；壶内先送回主世界） |
-| `/cg set` | - | 设置项帮助（需在壶内） |
-| `/cg set spawn` | - | 查看出生点 |
-| `/cg set spawnset` | - | 把当前位置设为出生点 |
-| `/cg set spawnclear` | - | 清除自定义出生点 |
-| `/cg set mob` | - | 切换壶内禁止自然刷怪 |
-| `/cg set god` | - | 切换壶内无敌 |
-| `/cg set msg` | - | 切换聊天与主世界互通 |
-| `/cg set sync` | - | 切换与主世界同步状态 |
+| `/cg` | `mypotworld` | 帮助（只列顶层指令，不列别名） |
+| `/cg go [序号]` | `mypotworld` | 进入壶世界；首次必须先选模板 |
+| `/cg exit` | `mypotworld` | 离开并返回来源世界 |
+| `/cg info` | `mypotworld` | 壶状态 + 活动区域（控制台/REST 亦可读） |
+| `/cg info up` | `mypotworld` | 扩大活动区域一级（需在壶内） |
+| `/cg tpl [页码]` | `mypotworld` | 建筑模板列表（[1] 棍母模板＝空模板，8 条/页） |
+| `/cg tpl save <名字>` | `mypotworld` | 把当前活动区域存成模板（需在壶内） |
+| `/cg visit <玩家名>` | `mypotworld.admin` | 访问他人的壶 |
+| `/cg guest` | `mypotworld` | 查看访客权限（需在壶内） |
+| `/cg guest on` / `off` | `mypotworld` | 开放 / 关闭公开访问（需在壶内） |
+| `/cg guest add <玩家名>` | `mypotworld` | 允许指定玩家访问（需在壶内） |
+| `/cg guest remove <玩家名>` | `mypotworld` | 移除访客（需在壶内） |
+| `/cg reset` | `mypotworld` | 重置本壶（连输两次确认；壶内先送回主世界） |
+| `/cg set` | `mypotworld` | 设置项帮助（需在壶内） |
+| `/cg set spawn` | `mypotworld` | 查看出生点 |
+| `/cg set spawnset` | `mypotworld` | 把当前位置设为出生点 |
+| `/cg set spawnclear` | `mypotworld` | 清除自定义出生点 |
+| `/cg set mob` | `mypotworld` | 切换壶内禁止自然刷怪 |
+| `/cg set god` | `mypotworld` | 切换壶内无敌 |
+| `/cg set msg` | `mypotworld` | 切换聊天与主世界互通 |
+| `/cg set sync` | `mypotworld` | 切换与主世界同步状态 |
 
 ## 配置
 配置文件路径：`config/MyPotWorld/settings.json`
@@ -75,6 +79,10 @@
 | 家园_活动区域_升级消耗每级递增 | 整数 | 0 | 每升一级额外增加的消耗 |
 
 ## 说明
+> **权限**：所有 `/cg` 指令需要 `mypotworld`；`/cg visit` 需要 `mypotworld.admin`。
+> 首次部署需授权，例如：`/group addperm default mypotworld`。
+> 访客规则：壶主 `/cg guest on` 后任何人可访问；也可用 `add` 单独放行；管理员始终可访问。
+
 - **进入流程**：`/cg tpl` 查看模板 → `/cg go <序号>` 选定 → 建壶 → 贴入模板（水平+垂直居中）→ 区域自适应 `边长 = max(等级尺寸, 模板最大边 + 10)` → 铺圈墙/出生点 → 放行
 - **已有壶**：`/cg go` 直接进入；带序号也不会再生成模板（要换模板请 `/cg reset`）
 - **旧版本壶**（没有模板记录）会被自动删除，要求重新选择模板（beta 取舍）
@@ -82,6 +90,10 @@
 - 世界状态（时间/天气/进度）由 `WorldChainSync` 同步，不属于本插件
 
 ## 插件版本
+### v0.7.0
+- 权限补齐：`/cg` 使用 `mypotworld`，管理动作使用 `mypotworld.admin`（`/cg visit`）
+- 新增访客权限：`/cg guest on|off|add|remove|list`（壶主在自己的壶内管理；关闭公开访问会送回名单外访客）
+
 ### v0.6.2
 - 玩家可见文案去掉条件/权限注解，帮助只保留命令与作用
 

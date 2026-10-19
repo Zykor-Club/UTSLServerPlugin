@@ -36,6 +36,12 @@ public sealed class PlayerPrefs
     /// <summary>已选定的建筑模板名；空 = 未选择，"__blank__" = 棍母模板（空模板，无任何建筑）。</summary>
     [JsonPropertyName("选定模板")] public string SelectedTemplate { get; set; } = "";
 
+    /// <summary>是否允许任何人访问（true = 公开；false = 仅访客名单 + 管理员）。</summary>
+    [JsonPropertyName("允许访客")] public bool AllowVisit { get; set; }
+
+    /// <summary>访客名单（玩家名，大小写不敏感）。</summary>
+    [JsonPropertyName("访客名单")] public List<string> Guests { get; set; } = [];
+
     /// <summary>由模板撑开的区域基础边长（0 = 未设置）；实际区域 = max(等级尺寸, 该值)。</summary>
     [JsonPropertyName("区域基础尺寸")] public int AreaBaseSize { get; set; }
 }
@@ -70,6 +76,7 @@ public static class Prefs
         lock (Gate)
         {
             if (!Map.TryGetValue(key, out var p)) { p = new PlayerPrefs(); Map[key] = p; }
+            if (p.Guests is null) { p.Guests = []; }
             return p;
         }
     }

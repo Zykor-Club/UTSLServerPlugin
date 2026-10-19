@@ -25,7 +25,7 @@ namespace MyPotWorld;
 ///   · 按需创建：玩家第一次 /cg 时建立属于他的壶；
 ///   · 闲置销毁：壶里没人超过「闲置销毁_秒」→ 调核心 DestroyAsync（存档 + Close + RemoveServer）。
 /// </summary>
-[PluginMetadata("MyPotWorld", "0.6.2", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
+[PluginMetadata("MyPotWorld", "0.7.0", "星梦", "尘歌壶：每个玩家一个隔离的私人世界（按需创建、闲置销毁）")]
 public sealed class MyPotWorldPlugin : BasePlugin
 {
     private static MyPotWorldConfig _config = new();
@@ -183,7 +183,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             catch (Exception ex) { TShock.Log.Error("[尘歌壶] 活动区域钩子注册失败: " + ex.Message); }
         }
 
-        Commands.ChatCommands.Add(new Command("", Command, "cg"));
+        Commands.ChatCommands.Add(new Command("mypotworld", Command, "cg"));
         PlayerHooks.PlayerLogout += OnLogout;
         PlayerHooks.PlayerChat += OnChat;
 
@@ -255,6 +255,9 @@ public sealed class MyPotWorldPlugin : BasePlugin
                     SaveTemplateCommand(args, args.Parameters.Count > 2 ? args.Parameters[2] : "");
                 else
                     TemplatesCommand(args);
+                break;
+            case "guest":
+                GuestCommand(args);
                 break;
             case "set":
                 SetCommand(args);
@@ -906,11 +909,6 @@ public sealed class MyPotWorldPlugin : BasePlugin
             Say(p, "[尘歌壶] 用法：/cg visit <玩家名>（访问他人的尘歌壶）");
             return;
         }
-        if (!p.HasPermission("tshock.admin"))
-        {
-            Say(p, "[尘歌壶] 你没有访问他人尘歌壶的权限。");
-            return;
-        }
 
         string want = args.Parameters[1];
         if (string.Equals(want, p.Name, StringComparison.OrdinalIgnoreCase))
@@ -952,6 +950,15 @@ public sealed class MyPotWorldPlugin : BasePlugin
             }
             ownerName = want;
             Say(p, $"[尘歌壶] {want} 当前不在线，将访问他留下的壶。");
+        }
+
+        // 访问控制：管理员直接放行；普通玩家需要壶主开放公开访问，或在访客名单里。
+        if (!p.HasPermission("mypotworld.admin"))
+        {
+            PlayerPrefs op = Prefs.Get(key);
+            bool guest = op.AllowVisit
+                || op.Guests.Any(n => string.Equals(n, p.Name, StringComparison.OrdinalIgnoreCase));
+            if (!guest) { Say(p, "[尘歌壶] 对方的壶未开放访问。"); return; }
         }
 
         // 若内存里已有同名壶，复用它的 key，避免重复创建
@@ -1187,6 +1194,73 @@ public sealed class MyPotWorldPlugin : BasePlugin
     }
 
     /// <summary>两列排版：命令列按显示宽度补空格，描述列起点对齐；标题按整块宽度居中。</summary>
+    /// <summary>/cg guest on|off|add|remove|list —— 壶主管理访客权限（需在自己的壶内）。</summary>
+    private static void GuestCommand(CommandArgs args)
+    {
+        TSPlayer? p = args.Player;
+        if (p is null) { TShock.Log.Info("[尘歌壶] 该指令需要玩家执行"); return; }
+        if (FindPotContext(p) is null) { Say(p, "[尘歌壶] 只能在壶内使用。"); return; }
+
+        PlayerPrefs prefs = Prefs.Get(OwnerKey(p));
+        string act = args.Parameters.Count > 1 ? args.Parameters[1].ToLowerInvariant() : "list";
+        switch (act)
+        {
+            case "on":
+                prefs.AllowVisit = true;
+                Prefs.Save();
+                Say(p, "[尘歌壶] 已开放访问，任何人都可以 /cg visit 你。");
+                break;
+            case "off":
+                prefs.AllowVisit = false;
+                Prefs.Save();
+                Say(p, "[尘歌壶] 已关闭公开访问。");
+                KickUnlistedGuests(p, prefs);
+                break;
+            case "add":
+            {
+                string name = args.Parameters.Count > 2 ? args.Parameters[2].Trim() : "";
+                if (name.Length == 0 || name.Length > 20) { Say(p, "[尘歌壶] 用法：/cg guest add <玩家名>"); return; }
+                if (string.Equals(name, p.Name, StringComparison.OrdinalIgnoreCase)) { Say(p, "[尘歌壶] 不用把自己加进名单。"); return; }
+                if (prefs.Guests.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase))) { Say(p, $"[尘歌壶] {name} 已经在名单里。"); return; }
+                prefs.Guests.Add(name);
+                Prefs.Save();
+                Say(p, $"[尘歌壶] 已允许 {name} 访问。");
+                break;
+            }
+            case "remove":
+            {
+                string name = args.Parameters.Count > 2 ? args.Parameters[2].Trim() : "";
+                if (name.Length == 0) { Say(p, "[尘歌壶] 用法：/cg guest remove <玩家名>"); return; }
+                int removed = prefs.Guests.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+                Prefs.Save();
+                Say(p, removed > 0 ? $"[尘歌壶] 已移除 {name}。" : $"[尘歌壶] 名单里没有 {name}。");
+                break;
+            }
+            case "list":
+            default:
+                Say(p, $"[尘歌壶] 公开访问：{(prefs.AllowVisit ? "开" : "关")}；名单：{(prefs.Guests.Count == 0 ? "（空）" : string.Join("、", prefs.Guests))}");
+                Say(p, "[尘歌壶] 用法：/cg guest on|off|add <名>|remove <名>|list");
+                break;
+        }
+    }
+
+    /// <summary>关闭公开访问后，把不在名单里的访客送回原世界。</summary>
+    private static void KickUnlistedGuests(TSPlayer owner, PlayerPrefs prefs)
+    {
+        ServerContext? ctx = UnifiedServerCoordinator.GetClientCurrentlyServer(owner.Index);
+        if (ctx is null || _core is null) { return; }
+        for (int i = 0; i < 256; i++)
+        {
+            TSPlayer? tp = TShock.Players.ElementAtOrDefault(i);
+            if (tp is null || !tp.Active || tp.Index == owner.Index) { continue; }
+            if (!ReferenceEquals(UnifiedServerCoordinator.GetClientCurrentlyServer(i), ctx)) { continue; }
+            if (prefs.Guests.Any(n => string.Equals(n, tp.Name, StringComparison.OrdinalIgnoreCase))) { continue; }
+            Say(tp, "[尘歌壶] 壶主关闭了公开访问，你已被送回原世界。");
+            TSPlayer tpRef = tp;
+            Task.Run(async () => { try { await _core!.LeaveAsync(tpRef, CancellationToken.None).ConfigureAwait(false); } catch { } });
+        }
+    }
+
     private static void PrintTable(TSPlayer? player, string title, (string cmd, string desc)[] rows)
     {
         int maxCmd = 0, maxDesc = 0;
@@ -1220,6 +1294,7 @@ public sealed class MyPotWorldPlugin : BasePlugin
             ("/cg info up", "扩大区域"),
             ("/cg tpl [页码]", "建筑模板列表"),
             ("/cg tpl save <名>", "保存当前区域为模板"),
+            ("/cg guest", "访客权限"),
             ("/cg set", "设置项"),
             ("/cg visit <玩家名>", "访问他人"),
             ("/cg reset", "重置本壶（需连输两次）"),
