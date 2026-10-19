@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>AutoTeam</AssemblyName>
+        <RootNamespace>AutoTeam</RootNamespace>
+        <Version>2.4.9</Version>
+    </PropertyGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>DeathDrop</AssemblyName>
+        <RootNamespace>DeathDrop</RootNamespace>
+        <Version>1.0.6</Version>
+    </PropertyGroup>
+
+</Project>

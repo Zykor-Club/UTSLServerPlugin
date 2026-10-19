@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>ConsoleSql</AssemblyName>
+        <RootNamespace>ConsoleSql</RootNamespace>
+        <Version>1.0.4</Version>
+    </PropertyGroup>
+
+</Project>

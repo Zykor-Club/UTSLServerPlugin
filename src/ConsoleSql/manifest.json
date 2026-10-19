@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "让控制台执行 SQL 操作数据库（仅控制台可用）"
+  },
+  "README.en-US": {
+    "Description": "Run SQL from the server console (console only)"
+  }
+}

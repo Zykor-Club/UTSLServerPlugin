@@ -1,0 +1,4 @@
+{
+  "README": { "Description": "聊天敏感词自动替换为星号并可记录" },
+  "README.en-US": { "Description": "Replace sensitive words in chat with asterisks and log them" }
+}

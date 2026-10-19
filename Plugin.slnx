@@ -23,4 +23,10 @@
   <Project Path="src/VirtualWorldCore/VirtualWorldCore.csproj" />
   <Project Path="src/WorldChainSync/WorldChainSync.csproj" />
   <Project Path="src/WorldCommandChannel/WorldCommandChannel.csproj" />
+  <Project Path="src/AutoTeam/AutoTeam.csproj" />
+  <Project Path="src/BanNpc/BanNpc.csproj" />
+  <Project Path="src/ConsoleSql/ConsoleSql.csproj" />
+  <Project Path="src/DeathDrop/DeathDrop.csproj" />
+  <Project Path="src/DisableMonsLoot/DisableMonsLoot.csproj" />
+  <Project Path="src/DonotFuck/DonotFuck.csproj" />
 </Solution>

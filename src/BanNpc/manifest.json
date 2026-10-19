@@ -1,0 +1,4 @@
+{
+  "README": { "Description": "禁止指定怪物生成（按 NPC ID 列表）" },
+  "README.en-US": { "Description": "Block spawning of specified NPCs" }
+}

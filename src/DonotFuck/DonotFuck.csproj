@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>DonotFuck</AssemblyName>
+        <RootNamespace>DonotFuck</RootNamespace>
+        <Version>3.2.4</Version>
+    </PropertyGroup>
+
+</Project>

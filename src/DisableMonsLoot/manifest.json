@@ -1,0 +1,8 @@
+{
+  "README": {
+    "Description": "击杀 Boss 后清理其掉落的战利品（可按 Boss 分组开关、可设范围）"
+  },
+  "README.en-US": {
+    "Description": "Clear loot dropped by bosses after they are killed"
+  }
+}
