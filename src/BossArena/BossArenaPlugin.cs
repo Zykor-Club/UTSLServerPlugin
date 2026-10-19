@@ -15,7 +15,7 @@ namespace BossArena;
 /// ★ 关键点：本插件【只使用 IVirtualWorldCore 的公开接口 + VirtualWorldRequest 的回调】，
 ///   用来回答"核心要不要改"。若要改，说明抽象还差一点。
 /// </summary>
-[PluginMetadata("BossArena", "0.1.0", "星梦", "Boss 场地：公共假世界 + 战斗平台模板 + 区域重置")]
+[PluginMetadata("BossArena", "0.2.0", "星梦", "Boss 场地：公共假世界 + 战斗平台模板 + 区域重置")]
 public sealed class BossArenaPlugin : BasePlugin
 {
     private const string ArenaKey = "arena:boss";
@@ -27,6 +27,8 @@ public sealed class BossArenaPlugin : BasePlugin
     private static bool _apiVersionMismatch;
     private static BossArenaConfig _config = new();
     private static string _configPath = "";
+    private static Timer? _sweepTimer;
+    private static long _idleSinceMs;
 
     /// <summary>服务发现：与初始化顺序无关（宿主在所有 InitializeAsync 之前调用）。</summary>
     public override void BeforeGlobalInitialize(ImmutableArray<IPluginContainer> plugins)
@@ -67,11 +69,49 @@ public sealed class BossArenaPlugin : BasePlugin
         }
 
         Commands.ChatCommands.Add(new Command("", Command, "ba"));
+
+        // 闲置卸载：每 5 秒看一次，场地没人超过配置时长就存档并卸载（下次 /ba 自动重建）。
+        _sweepTimer = new Timer(_ => SweepIdle(), null, 5000, 5000);
         TShock.Log.Info(_core is not null
-            ? $"[BossArena] 已加载 v0.1.0（服务发现: 已取得 VirtualWorldCore，契约 v{VirtualWorldApi.Version}）"
+            ? $"[BossArena] 已加载 v0.2.0（服务发现: 已取得 VirtualWorldCore，契约 v{VirtualWorldApi.Version}）"
             : _apiVersionMismatch
-                ? $"[BossArena] 已加载 v0.1.0（★契约版本不匹配，期望 v{VirtualWorldApi.Version}，功能已禁用）"
-                : "[BossArena] 已加载 v0.1.0（★未取得 VirtualWorldCore）");
+                ? $"[BossArena] 已加载 v0.2.0（★契约版本不匹配，期望 v{VirtualWorldApi.Version}，功能已禁用）"
+                : "[BossArena] 已加载 v0.2.0（★未取得 VirtualWorldCore）");
+    }
+
+    public override ValueTask DisposeAsync(bool disposing)
+    {
+        if (disposing) { try { _sweepTimer?.Dispose(); } catch { } }
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>闲置检查：场地已加载、且没有活着的玩家超过设定时长 → 存档并卸载。</summary>
+    private static void SweepIdle()
+    {
+        try
+        {
+            if (_core is null || _config.IdleDestroySeconds <= 0) { return; }
+            IVirtualWorld? w = _core.Find(ArenaKey);
+            if (w is null || !w.IsLoaded) { _idleSinceMs = 0; return; }
+            if (_core.CountLiveOccupants(w) > 0) { _idleSinceMs = 0; return; }
+
+            long now = Environment.TickCount64;
+            if (_idleSinceMs == 0) { _idleSinceMs = now; return; }
+            if (now - _idleSinceMs < _config.IdleDestroySeconds * 1000L) { return; }
+
+            _idleSinceMs = 0;
+            IVirtualWorld world = w;
+            Task.Run(async () =>
+            {
+                try
+                {
+                    VirtualWorldResult r = await _core!.DestroyAsync(world, save: true, CancellationToken.None).ConfigureAwait(false);
+                    TShock.Log.Info($"[BossArena] 闲置卸载: success={r.Success} {r.Message}（闲置 {_config.IdleDestroySeconds}s）");
+                }
+                catch (Exception ex) { TShock.Log.Warning("[BossArena] 闲置卸载异常: " + ex.Message); }
+            });
+        }
+        catch (Exception ex) { TShock.Log.Warning("[BossArena] 闲置检查异常: " + ex.Message); }
     }
 
     /// <summary>可否决事件回调：只在本插件被开启【调试_否决进入】时否决"进入场地"。</summary>
@@ -191,7 +231,7 @@ public sealed class BossArenaPlugin : BasePlugin
             TilesY = tileH,
             SeedWorldPath = seed.Main.worldPathName,
             Headless = true,
-            IdleDestroySeconds = 0,         // 常驻，不回收（本玩法不需要回收）
+            IdleDestroySeconds = _config.IdleDestroySeconds,   // 由本插件的闲置检查执行（核心只当元数据）
             LogTag = "[BossArena]",
 
             // 加载完成：只有"刚用种子建出来的世界"才清空，避免抹掉既有存档
@@ -271,9 +311,15 @@ public sealed class BossArenaPlugin : BasePlugin
     {
         TSPlayer? p = args.Player;
         IVirtualWorld? w = _core?.Find(ArenaKey);
-        if (w is null) { p?.SendInfoMessage("[BossArena] 场地尚未创建（有人 /ba 时自动创建）。"); return; }
+        if (w is null) { Reply(p, "[BossArena] 场地尚未创建（有人 /ba 时自动创建）。"); return; }
         int live = _core is null ? 0 : _core.CountLiveOccupants(w);
-        p?.SendInfoMessage($"[BossArena] 场地: 已加载={w.IsLoaded} 在线玩家={live} 区域半宽={HalfWidth}");
+        Reply(p, $"[BossArena] 场地: 已加载={w.IsLoaded} 在线玩家={live} 区域半宽={HalfWidth} 闲置卸载={(_config.IdleDestroySeconds > 0 ? _config.IdleDestroySeconds + "s" : "常驻")}");
+    }
+
+    /// <summary>回给玩家；控制台则写日志（否则控制台执行指令看不到任何输出）。</summary>
+    private static void Reply(TSPlayer? p, string msg)
+    {
+        if (p is not null) { p.SendInfoMessage(msg); } else { TShock.Log.Info(msg); }
     }
 
     // ===== 模板与区域（纯玩法，全部在本世界线程上执行） =====

@@ -5,7 +5,7 @@
     <PropertyGroup>
         <AssemblyName>BossArena</AssemblyName>
         <RootNamespace>BossArena</RootNamespace>
-        <Version>0.1.0</Version>
+        <Version>0.2.0</Version>
     </PropertyGroup>
 
     <!-- 只依赖【契约程序集】：核心实现升级不必重编玩法 -->

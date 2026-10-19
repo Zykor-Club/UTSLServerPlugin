@@ -21,6 +21,10 @@ public sealed class BossArenaConfig
     [JsonPropertyName("调试_否决进入")]
     public bool DebugVetoEnter { get; set; } = false;
 
+    /// <summary>闲置多久后卸载场地（秒）；0 = 常驻。没人时到点存档并卸载，下次 /ba 自动重建。</summary>
+    [JsonPropertyName("闲置销毁_秒")]
+    public int IdleDestroySeconds { get; set; } = 300;
+
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
