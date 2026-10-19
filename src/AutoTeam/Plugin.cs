@@ -3,7 +3,9 @@ using Terraria;
 using TShockAPI;
 using TShockAPI.Hooks;
 using TrProtocol.NetPackets;
+using UnifierTSL;
 using UnifierTSL.Events.Core;
+using UnifierTSL.Events.Handlers;
 using UnifierTSL.Events.Handlers;
 using UnifierTSL.Plugins;
 
@@ -14,6 +16,7 @@ public sealed class AutoTeamPlugin : BasePlugin
 {
     private static AutoTeamConfig _config = new();
     private static string _configPath = "";
+    private static long _lastHeal;
 
     public override int InitializationOrder => TShock.Order + 1;
 
@@ -31,6 +34,7 @@ public sealed class AutoTeamPlugin : BasePlugin
         _config = AutoTeamConfig.Load(_configPath);
 
         PlayerHooks.PlayerPostLogin += OnLogin;
+        UnifierApi.EventHub.Game.PostUpdate.Register(OnTick, HandlerPriority.Normal);
         NetPacketHandler.Register<PlayerTeam>(OnTeamPacket, HandlerPriority.Normal);
         Commands.ChatCommands.Add(new Command("autoteam.toggle", Toggle, "autoteam", "at"));
         TShock.Log.Info("[AutoTeam] 已加载");
@@ -41,9 +45,24 @@ public sealed class AutoTeamPlugin : BasePlugin
         if (disposing)
         {
             PlayerHooks.PlayerPostLogin -= OnLogin;
+            UnifierApi.EventHub.Game.PostUpdate.UnRegister(OnTick);
             NetPacketHandler.UnRegister<PlayerTeam>(OnTeamPacket);
         }
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>每秒自愈一次：登录事件时序不可靠时，这里兜底。</summary>
+    private static void OnTick(ref ReadonlyNoCancelEventArgs<ServerEvent> args)
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastHeal < 1000) { return; }
+        _lastHeal = now;
+        for (int i = 0; i < TShock.Players.Length; i++)
+        {
+            TSPlayer? p = TShock.Players[i];
+            if (p is null || !p.Active) { continue; }
+            Assign(p);
+        }
     }
 
     private static void OnLogin(PlayerPostLoginEventArgs args)
@@ -67,6 +86,7 @@ public sealed class AutoTeamPlugin : BasePlugin
 
         int index = TeamIndex(teamName);
         if (index < 0) { return false; }
+        if (player.TPlayer.team == index) { return false; }
         player.SetTeam(index);
         return true;
     }

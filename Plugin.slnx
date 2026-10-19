@@ -27,6 +27,5 @@
   <Project Path="src/BanNpc/BanNpc.csproj" />
   <Project Path="src/ConsoleSql/ConsoleSql.csproj" />
   <Project Path="src/DeathDrop/DeathDrop.csproj" />
-  <Project Path="src/DisableMonsLoot/DisableMonsLoot.csproj" />
   <Project Path="src/DonotFuck/DonotFuck.csproj" />
 </Solution>

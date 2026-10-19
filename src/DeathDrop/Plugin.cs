@@ -52,6 +52,8 @@ public sealed class DeathDropPlugin : BasePlugin
             ? TShock.Players[npc.lastInteraction]
             : null;
 
+        try
+        {
         if (_config.RandomDrops)
         {
             int id = PickGlobal();
@@ -70,26 +72,17 @@ public sealed class DeathDropPlugin : BasePlugin
                 if (id > 0) { Spawn(server, npc, id, Rng.Next(m.Min, m.Max + 1), killer); }
             }
         }
+        }
+        catch (Exception ex) { TShock.Log.Error("[DeathDrop] 掉落异常: " + ex); }
     }
 
     private static void Spawn(ServerContext server, NPC npc, int itemId, int stack, TSPlayer? killer)
     {
-        TSPlayer? target = killer;
-        if (target is null)
-        {
-            float best = float.MaxValue;
-            for (int i = 0; i < TShock.Players.Length; i++)
-            {
-                TSPlayer? p = TShock.Players[i];
-                if (p is null || !p.Active || !ReferenceEquals(p.GetCurrentServer(), server)) { continue; }
-                float dx = p.X - npc.position.X;
-                float dy = p.Y - npc.position.Y;
-                float d = dx * dx + dy * dy;
-                if (d < best) { best = d; target = p; }
-            }
-        }
+        Item proto = TShockAPI.Utils.GetItemById(itemId);
+        Vector2 pos = new(npc.position.X + proto.width / 2f, npc.position.Y + proto.height / 2f);
+        int idx = server.Item.NewItem(null, pos, proto.type, stack);
+        if (idx < 0) { return; }
 
-        target?.GiveItem(itemId, stack);
     }
 
     private static int PickGlobal()

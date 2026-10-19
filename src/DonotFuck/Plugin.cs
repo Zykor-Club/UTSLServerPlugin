@@ -4,6 +4,7 @@ using TShockAPI;
 using UnifierTSL;
 using UnifierTSL.Events.Core;
 using UnifierTSL.Events.Handlers;
+using TrProtocol.NetPackets.Modules;
 using UnifierTSL.Plugins;
 
 namespace DonotFuck;
@@ -33,18 +34,27 @@ public sealed class DonotFuckPlugin : BasePlugin
         _config = DonotFuckConfig.Load(_configPath);
 
         UnifierApi.EventHub.Chat.ChatEvent.Register(OnChat, HandlerPriority.Normal);
+        NetPacketHandler.Register<NetTextModule>(OnTextPacket, HandlerPriority.VeryHigh);
+        HookEvents.Terraria.Chat.ChatHelper.BroadcastChatMessage += OnBroadcast;
         Commands.ChatCommands.Add(new Command("donotfuck.use", Command, "df"));
         TShock.Log.Info($"[DonotFuck] 已加载（{_config.DirtyWords.Count} 个敏感词）");
     }
 
     public override ValueTask DisposeAsync(bool disposing)
     {
-        if (disposing) { UnifierApi.EventHub.Chat.ChatEvent.UnRegister(OnChat); }
+        if (disposing)
+        {
+            UnifierApi.EventHub.Chat.ChatEvent.UnRegister(OnChat);
+            NetPacketHandler.UnRegister<NetTextModule>(OnTextPacket);
+            HookEvents.Terraria.Chat.ChatHelper.BroadcastChatMessage -= OnBroadcast;
+        }
         return ValueTask.CompletedTask;
     }
 
     private static void OnChat(ref ValueEventArgs<ChatEvent> args)
     {
+        try
+        {
         ChatEvent e = args.Content;
         TSPlayer? player = e.Who >= 0 && e.Who < TShock.Players.Length ? TShock.Players[e.Who] : null;
         if (player is null) { return; }
@@ -58,8 +68,51 @@ public sealed class DonotFuckPlugin : BasePlugin
         if (hits.Count == 0) { return; }
 
         args.Content.Text = replaced;
-        TShock.Log.Info($"[DonotFuck] {player.Name}: {hits.Count} 个敏感词");
         WriteLog(player.Name, hits);
+        }
+        catch (Exception ex) { TShock.Log.Error("[DonotFuck] chat 异常: " + ex); }
+    }
+
+    /// <summary>包级拦截：ChatHandler 之前改写客户端发来的聊天文本（VeryHigh=10 &lt; ChatHandler 的 11）。</summary>
+    private static void OnTextPacket(ref ReceivePacketEvent<NetTextModule> args)
+    {
+        try
+        {
+            TextC2S? c2s = args.Packet.TextC2S;
+            if (c2s is null || string.IsNullOrEmpty(c2s.Text)) { return; }
+
+            TSPlayer? player = args.Who >= 0 && args.Who < TShock.Players.Length ? TShock.Players[args.Who] : null;
+            if (player is null) { return; }
+            if (player.HasPermission("donotfuck.admin") || player.Group?.Name == "owner") { return; }
+
+            string replaced = Redact(c2s.Text, out List<string> hits);
+            if (hits.Count == 0) { return; }
+            c2s.Text = replaced;
+            WriteLog(player.Name, hits);
+        }
+        catch (Exception ex) { TShock.Log.Error("[DonotFuck] packet 异常: " + ex); }
+    }
+
+    /// <summary>兜底：ChatEvent 没触发时，直接在广播出口改写（不区分管理员）。</summary>
+    private static void OnBroadcast(Terraria.Chat.ChatHelperSystemContext sender, HookEvents.Terraria.Chat.ChatHelper.BroadcastChatMessageEventArgs args)
+    {
+        string text = args.text?.ToString() ?? "";
+        if (text.Length == 0) { return; }
+
+        TSPlayer? speaker = null;
+        for (int i = 0; i < TShock.Players.Length; i++)
+        {
+            TSPlayer? p = TShock.Players[i];
+            if (p is null || !p.Active || string.IsNullOrEmpty(p.Name)) { continue; }
+            if (text.Contains(p.Name, StringComparison.Ordinal) && (speaker is null || p.Name.Length > speaker.Name.Length)) { speaker = p; }
+        }
+        if (speaker is null) { return; }
+        if (speaker.HasPermission("donotfuck.admin") || speaker.Group?.Name == "owner") { return; }
+
+        string replaced = Redact(text, out List<string> hits);
+        if (hits.Count == 0) { return; }
+        args.text = Terraria.Localization.NetworkText.FromLiteral(replaced);
+        WriteLog(speaker.Name, hits);
     }
 
     private static string Redact(string text, out List<string> hits)

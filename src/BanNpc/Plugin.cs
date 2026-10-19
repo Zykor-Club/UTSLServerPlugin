@@ -25,6 +25,8 @@ public sealed class BanNpcPlugin : BasePlugin
 
         _configPath = Path.Combine(configRegistrar.Directory, "settings.json");
         _config = BanNpcConfig.Load(_configPath);
+        int removed = _config.Npcs.RemoveAll(id => id <= 0 || id >= Terraria.ID.NPCID.Count);
+        if (removed > 0) { _config.Save(_configPath); TShock.Log.Info($"[BanNpc] 已清理 {removed} 个非法 ID"); }
 
         HookEvents.Terraria.NPC.OnSpawn += OnSpawn;
         Commands.ChatCommands.Add(new Command("bannpc.use", Command, "bm"));
@@ -40,8 +42,9 @@ public sealed class BanNpcPlugin : BasePlugin
     private static void OnSpawn(NPC npc, HookEvents.Terraria.NPC.OnSpawnEventArgs args)
     {
         if (npc is null || _config.Npcs.Count == 0) { return; }
-        if (_config.Npcs.Contains(npc.netID))
+        if (_config.Npcs.Contains(npc.type))
         {
+            args.ContinueExecution = false;   // 从生成入口直接拦掉，active=false 会被后续逻辑覆盖
             npc.active = false;
         }
     }
@@ -64,30 +67,60 @@ public sealed class BanNpcPlugin : BasePlugin
             return;
         }
 
-        List<NPC> matched = TShockAPI.Utils.GetNPCByIdOrName(args.Parameters[1]);
-        if (matched.Count == 0) { Reply(args, "无效 NPC：" + args.Parameters[1]); return; }
-        if (matched.Count > 1) { Reply(args, "匹配到多个，请用 ID：" + string.Join("、", matched.Select(n => $"{n.FullName}({n.netID})"))); return; }
-
-        NPC npc = matched[0];
+        if (!TryResolveNpc(args.Parameters[1], out int npcId, out string npcName))
+        {
+            Reply(args, "找不到 NPC：" + args.Parameters[1]);
+            return;
+        }
         switch (args.Parameters[0].ToLowerInvariant())
         {
             case "add":
-                if (_config.Npcs.Contains(npc.netID)) { Reply(args, $"{npc.FullName}({npc.netID}) 已在表中"); return; }
-                _config.Npcs.Add(npc.netID);
+                if (_config.Npcs.Contains(npcId)) { Reply(args, $"{npcName}({npcId}) 已在表中"); return; }
+                _config.Npcs.Add(npcId);
                 _config.Save(_configPath);
-                Reply(args, $"已阻止 {npc.FullName}({npc.netID})");
+                Reply(args, $"已阻止 {npcName}({npcId})");
                 break;
             case "del":
             case "delete":
             case "remove":
-                if (!_config.Npcs.Remove(npc.netID)) { Reply(args, $"{npc.FullName}({npc.netID}) 不在表中"); return; }
+                if (!_config.Npcs.Remove(npcId)) { Reply(args, $"{npcName}({npcId}) 不在表中"); return; }
                 _config.Save(_configPath);
-                Reply(args, $"已解除 {npc.FullName}({npc.netID})");
+                Reply(args, $"已解除 {npcName}({npcId})");
                 break;
             default:
                 Reply(args, "用法：/bm add|del <名称或ID>");
                 break;
         }
+    }
+
+    /// <summary>按 ID 或名称解析 NPC：优先精确名，其次包含匹配（避免 GetNPCByIdOrName 返回未初始化 NPC）。</summary>
+    private static bool TryResolveNpc(string input, out int id, out string name)
+    {
+        id = 0;
+        name = "";
+        if (int.TryParse(input, out int parsed) && parsed > 0 && parsed < Terraria.ID.NPCID.Count)
+        {
+            id = parsed;
+            name = Terraria.Lang.GetNPCNameValue(parsed).ToString();
+            return true;
+        }
+
+        List<(int Id, string Name)> partial = [];
+        for (int i = 1; i < Terraria.ID.NPCID.Count; i++)
+        {
+            string n = Terraria.Lang.GetNPCNameValue(i).ToString();
+            if (string.IsNullOrEmpty(n)) { continue; }
+            if (string.Equals(n, input, StringComparison.OrdinalIgnoreCase)) { id = i; name = n; return true; }
+            if (n.Contains(input, StringComparison.OrdinalIgnoreCase)) { partial.Add((i, n)); }
+        }
+
+        if (partial.Count == 1) { id = partial[0].Id; name = partial[0].Name; return true; }
+        if (partial.Count > 1)
+        {
+            name = string.Join("、", partial.Take(8).Select(x => $"{x.Name}({x.Id})"));
+            return false;
+        }
+        return false;
     }
 
     private static void Reply(CommandArgs args, string text)

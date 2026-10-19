@@ -44,7 +44,7 @@
 | 自定义掉落设置 | 数组 | [] | 每项：生物id / 概率 / 物品池 / 数量范围 |
 
 ## 说明
-- UTSL 没有 `Item.NewItem`，掉落改为**直接发给击杀者**（没有击杀者时给最近的玩家）
+- 用 `server.Item.NewItem(...)` 在当前世界生成掉落（UTSL 把 `Item.NewItem` 移到了每世界的 `ItemSystemContext`）
 - 每个世界独立生成物品（按 `ServerContext` 取世界）
 - 日志关键词：`[DeathDrop]`
 
