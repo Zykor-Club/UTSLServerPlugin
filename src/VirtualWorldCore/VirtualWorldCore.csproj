@@ -5,7 +5,7 @@
     <PropertyGroup>
         <AssemblyName>VirtualWorldCore</AssemblyName>
         <RootNamespace>UTSL.VirtualWorld</RootNamespace>
-        <Version>0.1.0</Version>
+        <Version>0.2.0</Version>
     </PropertyGroup>
 
     <!-- 契约程序集：编译期引用，运行时不随核心复制到 out（部署时放到 plugins/VirtualWorldCore/lib/） -->

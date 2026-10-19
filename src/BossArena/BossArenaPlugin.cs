@@ -282,7 +282,7 @@ public sealed class BossArenaPlugin : BasePlugin
     private static void Reset(CommandArgs args)
     {
         TSPlayer? p = args.Player;
-        if (p is not null && !p.HasPermission("tshock.admin")) { p.SendErrorMessage("[BossArena] 你没有重置场地的权限。"); return; }
+        if (p is not null && !p.HasPermission("bossarena.admin")) { p.SendErrorMessage("[BossArena] 你没有重置场地的权限。"); return; }
         if (_core is null) { return; }
 
         IVirtualWorld? w = _core.Find(ArenaKey);

@@ -14,10 +14,10 @@
 |------|:----:|------|
 | `/stitch` | - | 等同 `/stitch status` |
 | `/stitch status` | - | 链、各世界尺寸/在线/陆地边缘、日志开关 |
-| `/stitch reload` | `tshock.admin` | 重载配置并做运行期自检 |
-| `/stitch on` | `tshock.admin` | 开启换乘（写回配置） |
-| `/stitch off` | `tshock.admin` | 关闭换乘（写回配置） |
-| `/stitch diag` | `tshock.admin` | 切换诊断日志（写回配置） |
+| `/stitch reload` | `edgestitch.admin` | 重载配置并做运行期自检 |
+| `/stitch on` | `edgestitch.admin` | 开启换乘（写回配置） |
+| `/stitch off` | `edgestitch.admin` | 关闭换乘（写回配置） |
+| `/stitch diag` | `edgestitch.admin` | 切换诊断日志（写回配置） |
 
 ## 配置
 配置文件路径：`config/EdgeStitch/EdgeStitch.json`

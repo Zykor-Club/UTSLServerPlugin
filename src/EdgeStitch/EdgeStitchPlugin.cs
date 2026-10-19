@@ -81,7 +81,7 @@ public sealed class EdgeStitchPlugin : BasePlugin
     private void StitchCommand(CommandArgs args)
     {
         string sub = args.Parameters.Count > 0 ? args.Parameters[0].ToLowerInvariant() : "status";
-        bool admin = args.Player is null || args.Player.HasPermission("tshock.admin");
+        bool admin = args.Player is null || args.Player.HasPermission("edgestitch.admin");
 
         switch (sub)
         {

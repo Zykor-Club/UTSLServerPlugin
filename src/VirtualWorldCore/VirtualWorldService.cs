@@ -23,10 +23,13 @@ namespace UTSL.VirtualWorld;
 ///   ② 判"有没有人"以【世界玩家表】为准，不信自己维护的映射；
 ///   ③ 绝不对"状态看起来过期"的【在线玩家】触发生命周期钩子或清记录。
 /// </summary>
-internal sealed class VirtualWorldService : IVirtualWorldCore
+internal sealed class VirtualWorldService : IVirtualWorldCore, IVirtualWorldStatsProvider
 {
     /// <summary>诊断日志总开关（默认开，与改造前 PocketWorld 的 TransferDiagOn 一致）。</summary>
     internal static bool DiagnosticsEnabled = true;
+
+    /// <summary>核心配置（启动时由插件载入；/vwc reload 可热更）。</summary>
+    internal static VirtualWorldCoreConfig Config { get; set; } = new();
 
     private readonly ConcurrentDictionary<string, VirtualWorldInstance> worlds = new(StringComparer.Ordinal);
 
@@ -48,6 +51,49 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
     // ==================== 注册表 ====================
 
     public IReadOnlyList<IVirtualWorld> Worlds => worlds.Values.Cast<IVirtualWorld>().ToArray();
+
+    /// <summary>实例总览快照（可选接口 IVirtualWorldStatsProvider）。</summary>
+    public VirtualWorldStats GetStats()
+    {
+        VirtualWorldInstance[] all = worlds.Values.ToArray();
+        DateTime now = DateTime.UtcNow;
+        List<VirtualWorldInstanceInfo> list = new(all.Length);
+        int loaded = 0, occupants = 0;
+
+        foreach (VirtualWorldInstance w in all)
+        {
+            int live = 0;
+            try { live = CountLiveOccupants(w); } catch { }
+
+            long bytes = 0;
+            try
+            {
+                string? path = w.Context?.Main?.worldPathName;
+                if (!string.IsNullOrEmpty(path) && File.Exists(path)) { bytes = new FileInfo(path).Length; }
+            }
+            catch { }
+
+            if (w.IsLoaded) { loaded++; }
+            occupants += live;
+
+            list.Add(new VirtualWorldInstanceInfo
+            {
+                Key = w.Key,
+                DisplayName = w.DisplayName,
+                Group = w.Group,
+                OwnerKey = w.OwnerKey,
+                TilesX = w.Context?.Main?.maxTilesX ?? 0,
+                TilesY = w.Context?.Main?.maxTilesY ?? 0,
+                Occupants = live,
+                Loaded = w.IsLoaded,
+                WorldFileBytes = bytes,
+                IdleSeconds = Math.Max(0, (now - w.LastActiveUtc).TotalSeconds),
+                TemplateKey = w.Request?.TemplateKey ?? "",
+            });
+        }
+
+        return new VirtualWorldStats { Total = all.Length, Loaded = loaded, Occupants = occupants, Instances = list };
+    }
 
     public IVirtualWorld? Find(string key) =>
         !string.IsNullOrEmpty(key) && worlds.TryGetValue(key, out VirtualWorldInstance? w) ? w : null;
@@ -199,6 +245,11 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         ServerContext? ctx = (world as VirtualWorldInstance)?.Context;
         if (ctx is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例未加载，无法导出区块模板"); }
         if (w <= 0 || h <= 0) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"矩形尺寸非法: {w}x{h}"); }
+        if (w > Config.TemplateMaxWidth || h > Config.TemplateMaxHeight)
+        {
+            return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
+                $"模板尺寸超限（{w}x{h}，上限 {Config.TemplateMaxWidth}x{Config.TemplateMaxHeight}）");
+        }
 
         string? safe = UtplFormat.SanitizeName(name);
         if (safe is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "模板名不能为空或含非法字符"); }
@@ -240,10 +291,26 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位区块模板目录"); }
         string src = Path.Combine(dir, safe + UtplFormat.Extension);
         if (!File.Exists(src)) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"模板不存在: {safe}"); }
+        try
+        {
+            long len = new FileInfo(src).Length;
+            long maxBytes = Math.Max(1, Config.TemplateMaxFileMB) * 1024L * 1024L;
+            if (len > maxBytes)
+            {
+                return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
+                    $"模板文件过大（{len / 1024 / 1024}MB，上限 {Config.TemplateMaxFileMB}MB）");
+            }
+        }
+        catch { }
 
         try
         {
             UtplRegion region = await Task.Run(() => UtplFormat.Read(src), ct).ConfigureAwait(false);
+            if (region.W > Config.TemplateMaxWidth || region.H > Config.TemplateMaxHeight)
+            {
+                return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
+                    $"模板尺寸超限（{region.W}x{region.H}，上限 {Config.TemplateMaxWidth}x{Config.TemplateMaxHeight}）");
+            }
 
             // ★ 坐标口径（踩过坑，务必保持）：.utpl 的箱子/标牌/实体坐标全部是【模板内相对坐标】，
             //   文件里不含世界原点；贴入时一律 (tx + 记录坐标)。曾经箱子存绝对、标牌存相对，
@@ -598,6 +665,11 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
 
     private IVirtualWorld EnsureCore(VirtualWorldRequest request)
     {
+        if (Config.MaxInstances > 0 && !worlds.ContainsKey(request.Key) && worlds.Count >= Config.MaxInstances)
+        {
+            throw new InvalidOperationException($"实例数已达上限（{Config.MaxInstances}），拒绝创建 {request.Key}");
+        }
+
         VirtualWorldInstance w = worlds.GetOrAdd(request.Key,
             k => new VirtualWorldInstance(k, request.DisplayName, request.OwnerKey));
         w.Request = request;
@@ -687,7 +759,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                 // 启动超时：不但不登记，还要把已创建的世界收掉，避免留下跑着的孤儿世界
                 w.Context = null;
                 Remove(w.Key);
-                try { ctx.Close().Wait(TimeSpan.FromSeconds(10)); } catch { }
+                try { ctx.Close().Wait(TimeSpan.FromSeconds(Math.Max(1, Config.DestroyCloseTimeoutSeconds))); } catch { }
                 try { UnifiedServerCoordinator.RemoveServer(ctx); } catch { }
                 throw new TimeoutException($"世界启动超时: {ctx.Name}");
             }
@@ -717,7 +789,7 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
                     Error($"{Tag(w)} OnLoaded 投递失败: {ex.Message}");
                     loaded.TrySetResult(false);
                 }
-                if (!loaded.Task.Wait(TimeSpan.FromSeconds(30)))
+                if (!loaded.Task.Wait(TimeSpan.FromSeconds(Math.Max(1, Config.LoadTimeoutSeconds))))
                 {
                     Warn($"{Tag(w)} OnLoaded 等待超时（世界可能空转，Post 队列需空闲驱动）");
                 }
@@ -905,16 +977,18 @@ internal sealed class VirtualWorldService : IVirtualWorldCore
         //   就是『自己等自己』→ 必然卡满 Wait 超时（实测 60 秒）。所以先等世界线程把存档/清理做完，
         //   再在【调用方线程】上 Close。
         long t0 = Environment.TickCount64;
-        if (!posted.Task.Wait(TimeSpan.FromSeconds(10)))
+        int postTimeout = Math.Max(1, Config.DestroyPostTimeoutSeconds);
+        if (!posted.Task.Wait(TimeSpan.FromSeconds(postTimeout)))
         {
-            Warn($"{Tag(w)} 卸载前任务超时（10s），继续强制卸载");
+            Warn($"{Tag(w)} 卸载前任务超时（{postTimeout}s），继续强制卸载");
         }
         try
         {
             Task closeTask = ctx.Close();
-            if (!closeTask.Wait(TimeSpan.FromSeconds(15)))
+            int closeTimeout = Math.Max(1, Config.DestroyCloseTimeoutSeconds);
+            if (!closeTask.Wait(TimeSpan.FromSeconds(closeTimeout)))
             {
-                Warn($"{Tag(w)} Close 超时（15s）：世界线程可能仍在睡眠，先继续清理");
+                Warn($"{Tag(w)} Close 超时（{closeTimeout}s）：世界线程可能仍在睡眠，先继续清理");
             }
         }
         catch (Exception ex) { Warn($"{Tag(w)} Close 异常: {ex.Message}"); }

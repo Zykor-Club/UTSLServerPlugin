@@ -37,6 +37,7 @@
 | VirtualWorldEvents.cs | 可否决事件参数（TransferArgs / DestroyArgs） |
 | IVirtualWorldPolicy.cs | 玩法自定的准入门槛 |
 | IVirtualWorldCoreProvider.cs | 服务发现入口（Api / ApiVersion） |
+| VirtualWorldStats.cs | 可选 `IVirtualWorldStatsProvider` + 实例快照（核心扩展观测用，不 bump 契约） |
 | VirtualWorldApi.cs | 契约版本号（当前 7） |
 
 - 部署时必须放在 `<模块名>/lib/` 下，宿主靠它解析依赖（见 ModuleLoadContext）
@@ -44,6 +45,7 @@
 
 ## 插件版本
 ### 契约 v7
+- 新增可选接口 `IVirtualWorldStatsProvider`（增量，不影响已编译玩法）
 - 区块建筑模板：SaveRegionAsync / ApplyTemplateAsync / ListRegionTemplates（.utpl）
 
 ### 契约 v6
