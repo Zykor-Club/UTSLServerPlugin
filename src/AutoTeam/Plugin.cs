@@ -34,7 +34,6 @@ public sealed class AutoTeamPlugin : BasePlugin
         _config = AutoTeamConfig.Load(_configPath);
 
         PlayerHooks.PlayerPostLogin += OnLogin;
-        UnifierApi.EventHub.Game.PostUpdate.Register(OnTick, HandlerPriority.Normal);
         NetPacketHandler.Register<PlayerTeam>(OnTeamPacket, HandlerPriority.Normal);
         Commands.ChatCommands.Add(new Command("autoteam.toggle", Toggle, "autoteam", "at"));
         TShock.Log.Info("[AutoTeam] 已加载");
@@ -45,24 +44,9 @@ public sealed class AutoTeamPlugin : BasePlugin
         if (disposing)
         {
             PlayerHooks.PlayerPostLogin -= OnLogin;
-            UnifierApi.EventHub.Game.PostUpdate.UnRegister(OnTick);
             NetPacketHandler.UnRegister<PlayerTeam>(OnTeamPacket);
         }
         return ValueTask.CompletedTask;
-    }
-
-    /// <summary>每秒自愈一次：登录事件时序不可靠时，这里兜底。</summary>
-    private static void OnTick(ref ReadonlyNoCancelEventArgs<ServerEvent> args)
-    {
-        long now = Environment.TickCount64;
-        if (now - _lastHeal < 1000) { return; }
-        _lastHeal = now;
-        for (int i = 0; i < TShock.Players.Length; i++)
-        {
-            TSPlayer? p = TShock.Players[i];
-            if (p is null || !p.Active) { continue; }
-            Assign(p);
-        }
     }
 
     private static void OnLogin(PlayerPostLoginEventArgs args)
@@ -85,9 +69,9 @@ public sealed class AutoTeamPlugin : BasePlugin
         if (!_config.GroupTeam.TryGetValue(player.Group.Name, out string? teamName)) { return false; }
 
         int index = TeamIndex(teamName);
-        if (index < 0) { return false; }
-        if (player.TPlayer.team == index) { return false; }
+        if (index < 0) { player.SendInfoMessage($"队伍配置错误，您当前队伍为 {teamName}"); return false; }
         player.SetTeam(index);
+        player.SendInfoMessage($"你的队伍已切换为 {teamName}.");
         return true;
     }
 

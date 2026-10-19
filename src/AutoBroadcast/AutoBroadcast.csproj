@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>AutoBroadcast</AssemblyName>
+        <RootNamespace>AutoBroadcast</RootNamespace>
+        <Version>1.1.4</Version>
+    </PropertyGroup>
+
+</Project>

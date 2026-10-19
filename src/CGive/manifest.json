@@ -1,0 +1,4 @@
+{
+  "README": { "Description": "离线 give：玩家下次登录时自动执行预设命令" },
+  "README.en-US": { "Description": "Offline give: run preset commands when the player next logs in" }
+}

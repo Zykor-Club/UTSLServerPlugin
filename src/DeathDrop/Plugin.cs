@@ -83,6 +83,17 @@ public sealed class DeathDropPlugin : BasePlugin
         int idx = server.Item.NewItem(null, pos, proto.type, stack);
         if (idx < 0) { return; }
 
+        if (killer is not null)
+        {
+            try
+            {
+                killer.SendData(TrProtocol.MessageID.SyncExtraValue, "", idx);
+                killer.SendData(TrProtocol.MessageID.ItemOwner, "", idx);
+                killer.SendData(TrProtocol.MessageID.TweakItem, "", idx, 255f, 63f);
+            }
+            catch { }
+        }
+
     }
 
     private static int PickGlobal()
@@ -113,5 +124,5 @@ public sealed class DeathDropPlugin : BasePlugin
         return m.Pool.Count == 0 ? 0 : m.Pool[Rng.Next(m.Pool.Count)];
     }
 
-    private static bool Roll(int chance) => chance >= 100 || Rng.Next(100) < chance;
+    private static bool Roll(int chance) => Rng.Next(100) <= chance;
 }

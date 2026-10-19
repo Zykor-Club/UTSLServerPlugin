@@ -1,0 +1,4 @@
+{
+  "README": { "Description": "玩家垃圾桶：自动清理背包里被扔进垃圾桶的物品" },
+  "README.en-US": { "Description": "Auto trash can: clears items that players throw into the trash slot" }
+}

@@ -28,4 +28,7 @@
   <Project Path="src/ConsoleSql/ConsoleSql.csproj" />
   <Project Path="src/DeathDrop/DeathDrop.csproj" />
   <Project Path="src/DonotFuck/DonotFuck.csproj" />
+  <Project Path="src/AutoAirItem/AutoAirItem.csproj" />
+  <Project Path="src/AutoBroadcast/AutoBroadcast.csproj" />
+  <Project Path="src/CGive/CGive.csproj" />
 </Solution>

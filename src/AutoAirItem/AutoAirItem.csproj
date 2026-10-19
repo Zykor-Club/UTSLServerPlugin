@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>AutoAirItem</AssemblyName>
+        <RootNamespace>AutoAirItem</RootNamespace>
+        <Version>1.2.8</Version>
+    </PropertyGroup>
+
+</Project>
