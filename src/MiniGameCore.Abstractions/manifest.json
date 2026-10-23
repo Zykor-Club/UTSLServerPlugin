@@ -1,0 +1,8 @@
+﻿{
+  "README": {
+    "Description": "MiniGameCore 契约程序集：IMiniGame / IMiniGameRoom / IMapDefinition / IMiniGameService / ILeaderboardStore，供玩法编译期引用，运行时部署在 plugins/MiniGameCore/lib/"
+  },
+  "README.en-US": {
+    "Description": "MiniGameCore contract assembly (IMiniGame / IMiniGameRoom / IMapDefinition / IMiniGameService / ILeaderboardStore); referenced at compile time and deployed under plugins/MiniGameCore/lib/"
+  }
+}

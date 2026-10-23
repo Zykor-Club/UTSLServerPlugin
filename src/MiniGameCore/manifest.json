@@ -1,0 +1,8 @@
+﻿{
+  "README": {
+    "Description": "MiniGameCore 小游戏核心：房间状态机 / 倒计时与结算 / 房间与等候厅池 / 排行榜存储（玩法以子插件注册，如 Parkour）"
+  },
+  "README.en-US": {
+    "Description": "MiniGameCore: shared mini-game infrastructure (room state machine, countdown and settlement, room/lobby pooling, leaderboard storage) for gameplay plugins such as Parkour"
+  }
+}

@@ -1,0 +1,8 @@
+﻿{
+  "README": {
+    "Description": "跑酷玩法：空白/专用地图 + 玩家自圈区域（起点/终点/存档点/活动区）+ 倒计时、存档点重生、越界传回、区域显示"
+  },
+  "README.en-US": {
+    "Description": "Parkour minigame: blank or dedicated maps, author-defined regions (start/finish/checkpoints/activity), countdown, checkpoint respawn, out-of-bounds teleport, region overlay"
+  }
+}
