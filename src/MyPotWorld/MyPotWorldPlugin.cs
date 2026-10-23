@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using Terraria;
 using TShockAPI;
@@ -149,6 +149,9 @@ public sealed class MyPotWorldPlugin : BasePlugin
                 {
                     _apiVersionMismatch = provider.ApiVersion != VirtualWorldApi.Version;
                     _core = _apiVersionMismatch ? null : provider.Api;
+                    // v8：模板上限归玩法自己（核心只留资源硬上限）——数值与原来的核心默认值一致
+                    try { _core?.RegisterTemplateGuard("MyPotWorld", new PotTemplateGuard()); }
+                    catch (Exception ex) { TShock.Log.Warning("[尘歌壶] 注册模板约束失败: " + ex.Message); }
                     break;
                 }
             }
@@ -323,6 +326,28 @@ public sealed class MyPotWorldPlugin : BasePlugin
     }
 
     /// <summary>壶的玩法策略：核心在进入/销毁前回调。</summary>
+    /// <summary>
+    /// 壶的模板约束（v8）。原本这两个数字写在核心配置里，会连带限制别的玩法（比如大竞技场）；
+    /// 现在只约束尘歌壶自己的整世界模板和区块模板。
+    /// </summary>
+    private sealed class PotTemplateGuard : ITemplateGuard
+    {
+        private const long MaxFileBytes = 64L * 1024 * 1024;
+
+        public string? ValidateTemplate(VirtualWorldTemplateInfo info, long bytes, string group)
+        {
+            if (info.Width > MaxTemplateWidth || info.Height > MaxTemplateHeight)
+            {
+                return $"尘歌壶模板尺寸超限（{info.Width}x{info.Height}，上限 {MaxTemplateWidth}x{MaxTemplateHeight}）";
+            }
+            if (bytes > MaxFileBytes)
+            {
+                return $"尘歌壶模板文件过大（{bytes / 1024 / 1024}MB，上限 64MB）";
+            }
+            return null;
+        }
+    }
+
     private sealed class PotPolicy : IVirtualWorldPolicy
     {
         public bool CanJoin(TSPlayer player, IVirtualWorld world) => InteropAllows(_core?.FindByOccupant(player.Index));

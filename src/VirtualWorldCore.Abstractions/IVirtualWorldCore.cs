@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -46,6 +46,12 @@ public interface IVirtualWorldCore
     /// 之后同尺寸的新实例把 <see cref="VirtualWorldRequest.TemplateKey"/> 设成这个名字，即可直接复制它建世界。
     /// </summary>
     Task<VirtualWorldResult> SaveTemplateAsync(IVirtualWorld world, string name, CancellationToken ct);
+
+    /// <summary>
+    /// 注册/注销某玩法的模板约束（v8）。group 传空或 "*" = 对所有玩法生效；重复注册会覆盖。
+    /// 约束在 SaveTemplate / SaveRegion / ApplyTemplate 之前调用；核心自己只保留"资源硬上限"。
+    /// </summary>
+    void RegisterTemplateGuard(string group, ITemplateGuard? guard);
 
     // ===== 区块建筑模板（.utpl；v7）=====
     // 与"整世界模板基线"的区别：这里搬的是【任意矩形】的图格 + 箱子/标牌/实体，

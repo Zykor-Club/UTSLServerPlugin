@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using TShockAPI;
@@ -53,7 +53,7 @@ public sealed class VirtualWorldCorePlugin : BasePlugin, IVirtualWorldCoreProvid
                 _config = VirtualWorldCoreConfig.Load(_configPath);
                 VirtualWorldService.Config = _config;
                 VirtualWorldService.DiagnosticsEnabled = _config.Diagnostics;
-                Reply(args, $"[VirtualWorldCore] 已重载：模板上限 {_config.TemplateMaxWidth}x{_config.TemplateMaxHeight}、"
+                Reply(args, $"[VirtualWorldCore] 已重载：模板硬上限 {LimitsText(_config)}、"
                     + $"实例上限 {(_config.MaxInstances > 0 ? _config.MaxInstances.ToString() : "不限")}、"
                     + $"卸载 {_config.DestroyPostTimeoutSeconds}s/{_config.DestroyCloseTimeoutSeconds}s、诊断={(_config.Diagnostics ? "开" : "关")}");
                 break;
@@ -78,8 +78,18 @@ public sealed class VirtualWorldCorePlugin : BasePlugin, IVirtualWorldCoreProvid
         else { TShock.Log.Info(text); }
     }
 
+    /// <summary>把玩法自己的模板约束转给服务（v8）。group 传空/"*" = 对所有玩法生效。</summary>
+    public void RegisterTemplateGuard(string group, ITemplateGuard? guard) => service.RegisterTemplateGuard(group, guard);
+
     /// <summary>契约版本，供玩法发现时校验。</summary>
     public int ApiVersion => VirtualWorldApi.Version;
+
+    /// <summary>模板上限的可读描述（0 显示成"不限"）。</summary>
+    private static string LimitsText(VirtualWorldCoreConfig c)
+        => $"{(c.TemplateHardMaxWidth > 0 ? c.TemplateHardMaxWidth.ToString() : "不限")}"
+         + $"x{(c.TemplateHardMaxHeight > 0 ? c.TemplateHardMaxHeight.ToString() : "不限")}"
+         + $"/{(c.TemplateHardMaxFileMB > 0 ? c.TemplateHardMaxFileMB + "MB" : "不限")}"
+         + (c.TemplateLimitsByGroup is { Count: > 0 } m ? $"，分组 {m.Count} 组" : "");
 
     public VirtualWorldCorePlugin()
     {
@@ -110,6 +120,6 @@ public sealed class VirtualWorldCorePlugin : BasePlugin, IVirtualWorldCoreProvid
 
         Commands.ChatCommands.Add(new Command("virtualworldcore.admin", WvcCommand, "vwc"));
 
-        TShock.Log.Info($"[VirtualWorldCore] 已加载 v0.2.0（实例上限={(_config.MaxInstances > 0 ? _config.MaxInstances.ToString() : "不限")}，模板上限={_config.TemplateMaxWidth}x{_config.TemplateMaxHeight}，卸载超时={_config.DestroyPostTimeoutSeconds}s/{_config.DestroyCloseTimeoutSeconds}s）");
+        TShock.Log.Info($"[VirtualWorldCore] 已加载 v0.2.0（实例上限={(_config.MaxInstances > 0 ? _config.MaxInstances.ToString() : "不限")}，模板硬上限={LimitsText(_config)}，卸载超时={_config.DestroyPostTimeoutSeconds}s/{_config.DestroyCloseTimeoutSeconds}s）");
     }
 }

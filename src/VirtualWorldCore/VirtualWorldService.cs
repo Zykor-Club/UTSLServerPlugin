@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -48,6 +48,67 @@ internal sealed class VirtualWorldService : IVirtualWorldCore, IVirtualWorldStat
     private const int TeHatRack = 5;
     private const int TeFoodPlatter = 6;
 
+    // ==================== 模板约束（v8）====================
+
+    /// <summary>玩法注册的模板约束；键 = 玩法组名（"*" 表示对所有玩法生效）。</summary>
+    private static readonly ConcurrentDictionary<string, ITemplateGuard> guards = new(StringComparer.OrdinalIgnoreCase);
+
+    public void RegisterTemplateGuard(string group, ITemplateGuard? guard)
+    {
+        string key = NormalizeTemplateGroup(group);
+        if (guard is null)
+        {
+            guards.TryRemove(key, out _);
+            Info($"[模板约束] 已注销: {key}");
+            return;
+        }
+        guards[key] = guard;
+        Info($"[模板约束] 已注册: {key} ← {guard.GetType().Name}（共 {guards.Count} 条）");
+    }
+
+    private static string NormalizeTemplateGroup(string? group)
+        => string.IsNullOrWhiteSpace(group) || group.Trim() == "*" ? "*" : group.Trim();
+
+    /// <summary>
+    /// 统一模板校验：① 玩法组/全局硬上限 → ② 玩法注册的 Guard。返回 null = 放行。
+    /// 核心不再内置任何"玩法尺寸"，只防极端资源占用（硬上限默认 0 = 不限）。
+    /// </summary>
+    private static string? ValidateTemplateLimits(string? group, VirtualWorldTemplateInfo info, long bytes)
+    {
+        TemplateLimits lim = Config.LimitsFor(group);
+        if (lim.Width > 0 && info.Width > lim.Width)
+        {
+            return $"模板宽度超限（{info.Width} > {lim.Width}，上限来自核心配置；玩法应自行约束尺寸）";
+        }
+        if (lim.Height > 0 && info.Height > lim.Height)
+        {
+            return $"模板高度超限（{info.Height} > {lim.Height}，上限来自核心配置；玩法应自行约束尺寸）";
+        }
+        if (lim.FileMB > 0 && bytes > 0 && bytes > lim.FileMB * 1024L * 1024L)
+        {
+            return $"模板文件过大（{bytes / 1024 / 1024}MB > {lim.FileMB}MB，上限来自核心配置）";
+        }
+
+        string g = NormalizeTemplateGroup(group);
+        foreach (KeyValuePair<string, ITemplateGuard> kv in guards)
+        {
+            if (kv.Key != "*" && !string.Equals(kv.Key, g, StringComparison.OrdinalIgnoreCase)) { continue; }
+            try
+            {
+                string? reason = kv.Value.ValidateTemplate(info, bytes, g);
+                if (!string.IsNullOrEmpty(reason))
+                {
+                    Warn($"[模板约束] {kv.Key} 拒绝 '{info.Name}'（{info.Width}x{info.Height}，{bytes} 字节）: {reason}");
+                    return reason;
+                }
+            }
+            catch (Exception ex)
+            {
+                Warn($"[模板约束] {kv.Key} 抛异常（按放行处理）: {ex.Message}");
+            }
+        }
+        return null;
+    }
     // ==================== 注册表 ====================
 
     public IReadOnlyList<IVirtualWorld> Worlds => worlds.Values.Cast<IVirtualWorld>().ToArray();
@@ -148,6 +209,9 @@ internal sealed class VirtualWorldService : IVirtualWorldCore, IVirtualWorldStat
         foreach (char c in Path.GetInvalidFileNameChars()) { safe = safe.Replace(c, '_'); }
 
         int tx = ctx.Main.maxTilesX, ty = ctx.Main.maxTilesY;
+        string? saveGuard = ValidateTemplateLimits(world.Group, new VirtualWorldTemplateInfo(safe, tx, ty), -1);
+        if (saveGuard is not null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, saveGuard); }
+
         string? dir = TemplatesDir();
         if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位模板目录"); }
 
@@ -245,11 +309,8 @@ internal sealed class VirtualWorldService : IVirtualWorldCore, IVirtualWorldStat
         ServerContext? ctx = (world as VirtualWorldInstance)?.Context;
         if (ctx is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.NotLoaded, "实例未加载，无法导出区块模板"); }
         if (w <= 0 || h <= 0) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"矩形尺寸非法: {w}x{h}"); }
-        if (w > Config.TemplateMaxWidth || h > Config.TemplateMaxHeight)
-        {
-            return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
-                $"模板尺寸超限（{w}x{h}，上限 {Config.TemplateMaxWidth}x{Config.TemplateMaxHeight}）");
-        }
+        string? regionGuard = ValidateTemplateLimits(world.Group, new VirtualWorldTemplateInfo(name ?? "", w, h), -1);
+        if (regionGuard is not null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, regionGuard); }
 
         string? safe = UtplFormat.SanitizeName(name);
         if (safe is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, "模板名不能为空或含非法字符"); }
@@ -291,26 +352,16 @@ internal sealed class VirtualWorldService : IVirtualWorldCore, IVirtualWorldStat
         if (dir is null) { return VirtualWorldResult.Fail(VirtualWorldFailure.Exception, "无法定位区块模板目录"); }
         string src = Path.Combine(dir, safe + UtplFormat.Extension);
         if (!File.Exists(src)) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, $"模板不存在: {safe}"); }
-        try
-        {
-            long len = new FileInfo(src).Length;
-            long maxBytes = Math.Max(1, Config.TemplateMaxFileMB) * 1024L * 1024L;
-            if (len > maxBytes)
-            {
-                return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
-                    $"模板文件过大（{len / 1024 / 1024}MB，上限 {Config.TemplateMaxFileMB}MB）");
-            }
-        }
-        catch { }
+        long srcBytes = -1;
+        try { srcBytes = new FileInfo(src).Length; } catch { }
+        string? applyBytesGuard = ValidateTemplateLimits(world.Group, new VirtualWorldTemplateInfo(safe, 0, 0), srcBytes);
+        if (applyBytesGuard is not null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, applyBytesGuard); }
 
         try
         {
             UtplRegion region = await Task.Run(() => UtplFormat.Read(src), ct).ConfigureAwait(false);
-            if (region.W > Config.TemplateMaxWidth || region.H > Config.TemplateMaxHeight)
-            {
-                return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected,
-                    $"模板尺寸超限（{region.W}x{region.H}，上限 {Config.TemplateMaxWidth}x{Config.TemplateMaxHeight}）");
-            }
+            string? applySizeGuard = ValidateTemplateLimits(world.Group, new VirtualWorldTemplateInfo(safe, region.W, region.H), srcBytes);
+            if (applySizeGuard is not null) { return VirtualWorldResult.Fail(VirtualWorldFailure.PolicyRejected, applySizeGuard); }
 
             // ★ 坐标口径（踩过坑，务必保持）：.utpl 的箱子/标牌/实体坐标全部是【模板内相对坐标】，
             //   文件里不含世界原点；贴入时一律 (tx + 记录坐标)。曾经箱子存绝对、标牌存相对，
