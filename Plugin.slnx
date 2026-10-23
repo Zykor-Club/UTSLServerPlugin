@@ -1,4 +1,4 @@
-﻿<Solution>
+<Solution>
   <Configurations>
     <Platform Name="Any CPU" />
     <Platform Name="x64" />
@@ -34,5 +34,4 @@
   <Project Path="src/AutoAirItem/AutoAirItem.csproj" />
   <Project Path="src/AutoBroadcast/AutoBroadcast.csproj" />
   <Project Path="src/CGive/CGive.csproj" />
-  <Project Path="src/BossLock/BossLock.csproj" />
 </Solution>
