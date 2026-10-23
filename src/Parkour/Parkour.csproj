@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>Parkour</AssemblyName>
+        <RootNamespace>Parkour</RootNamespace>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <!-- 只依赖小游戏契约；运行时由 plugins/MiniGameCore/lib/ 提供 -->
+    <ItemGroup>
+        <ProjectReference Include="..\MiniGameCore.Abstractions\MiniGameCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+        <ProjectReference Include="..\VirtualWorldCore.Abstractions\VirtualWorldCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+</Project>

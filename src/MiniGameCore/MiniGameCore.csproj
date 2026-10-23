@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>MiniGameCore</AssemblyName>
+        <RootNamespace>UTSL.MiniGame</RootNamespace>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <!-- 契约程序集编译期引用即可；运行时由 plugins/MiniGameCore/lib/ 提供 -->
+    <ItemGroup>
+        <ProjectReference Include="..\MiniGameCore.Abstractions\MiniGameCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+        <ProjectReference Include="..\VirtualWorldCore.Abstractions\VirtualWorldCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+</Project>

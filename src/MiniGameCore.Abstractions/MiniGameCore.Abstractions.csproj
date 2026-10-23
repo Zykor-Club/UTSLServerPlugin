@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <Import Project="..\..\template.targets"/>
+
+    <PropertyGroup>
+        <AssemblyName>MiniGameCore.Abstractions</AssemblyName>
+        <RootNamespace>UTSL.MiniGame</RootNamespace>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <!-- 只依赖假世界契约：玩法注册到小游戏核心时要把 IVirtualWorld 传下去 -->
+    <ItemGroup>
+        <ProjectReference Include="..\VirtualWorldCore.Abstractions\VirtualWorldCore.Abstractions.csproj">
+            <Private>false</Private>
+            <ExcludeAssets>runtime</ExcludeAssets>
+        </ProjectReference>
+    </ItemGroup>
+
+</Project>

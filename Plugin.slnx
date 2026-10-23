@@ -1,4 +1,4 @@
-<Solution>
+﻿<Solution>
   <Configurations>
     <Platform Name="Any CPU" />
     <Platform Name="x64" />
@@ -17,7 +17,10 @@
   <Project Path="src/ItemHeldMessage/ItemHeldMessage.csproj" />
   <Project Path="src/ItemPool/ItemPool.csproj" />
   <Project Path="src/MidiPlayer/MidiPlayer.csproj" />
+  <Project Path="src/MiniGameCore/MiniGameCore.csproj" />
+  <Project Path="src/MiniGameCore.Abstractions/MiniGameCore.Abstractions.csproj" />
   <Project Path="src/MyPotWorld/MyPotWorld.csproj" />
+  <Project Path="src/Parkour/Parkour.csproj" />
   <Project Path="src/RuYouMusic/RuYouMusic.csproj" />
   <Project Path="src/VirtualWorldCore.Abstractions/VirtualWorldCore.Abstractions.csproj" />
   <Project Path="src/VirtualWorldCore/VirtualWorldCore.csproj" />
@@ -31,4 +34,5 @@
   <Project Path="src/AutoAirItem/AutoAirItem.csproj" />
   <Project Path="src/AutoBroadcast/AutoBroadcast.csproj" />
   <Project Path="src/CGive/CGive.csproj" />
+  <Project Path="src/BossLock/BossLock.csproj" />
 </Solution>
